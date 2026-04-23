@@ -24,6 +24,14 @@ variable "assets_bucket_arn" {
   default     = ""
 }
 
+# count 가 다른 리소스 attribute(unknown at plan)에 걸리면 "Invalid count argument" 에러.
+# destroy/refresh 에서도 안전하도록 plan-time known bool 로 분리.
+variable "enable_db_backup_to_assets" {
+  type        = bool
+  default     = false
+  description = "db-backup IRSA policy 생성 여부. assets_bucket_arn 이 plan 시점 unknown 이 될 수 있어 count 는 이 bool 로 분기."
+}
+
 variable "app_node_instance_types" {
   type        = list(string)
   description = "워커 노드 인스턴스 타입(평시 1대·max 확장 시 수평 증설)."

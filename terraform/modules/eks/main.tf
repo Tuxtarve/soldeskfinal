@@ -418,7 +418,9 @@ resource "aws_iam_role" "db_backup" {
 }
 
 resource "aws_iam_role_policy" "db_backup" {
-  count = var.assets_bucket_arn == "" ? 0 : 1
+  # count 는 plan-time known 값만 써야 함. assets_bucket_arn(다른 모듈 output)은 destroy/refresh 에서 unknown 이 되어
+  # "Invalid count argument" 가 터짐 → 명시적 bool 플래그로 분리.
+  count = var.enable_db_backup_to_assets ? 1 : 0
   name  = "${local.name_prefix}-db-backup-policy"
   role  = aws_iam_role.db_backup.name
   policy = jsonencode({

@@ -131,12 +131,13 @@ module "eks" {
     module.sqs.reservation_queue_arn,
     module.sqs.reservation_dlq_arn,
   ]
-  assets_bucket_arn       = module.s3.assets_bucket_arn
-  app_node_instance_types = var.eks_app_node_instance_types
-  app_node_desired_size   = var.eks_app_node_desired_size
-  app_node_min_size       = var.eks_app_node_min_size
-  app_node_max_size       = var.eks_app_node_max_size
-  depends_on              = [module.network]
+  assets_bucket_arn          = module.s3.assets_bucket_arn
+  enable_db_backup_to_assets = true
+  app_node_instance_types    = var.eks_app_node_instance_types
+  app_node_desired_size      = var.eks_app_node_desired_size
+  app_node_min_size          = var.eks_app_node_min_size
+  app_node_max_size          = var.eks_app_node_max_size
+  depends_on                 = [module.network]
 }
 
 module "s3_hosting_v2" {
