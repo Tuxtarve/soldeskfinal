@@ -20,6 +20,8 @@ helm repo update >/dev/null
 VALUES="$(mktemp)"
 trap 'rm -f "$VALUES"' EXIT
 cat >"$VALUES" <<'EOF'
+global:
+  priorityClassName: ticketing-priority-platform
 configs:
   params:
     server.insecure: true

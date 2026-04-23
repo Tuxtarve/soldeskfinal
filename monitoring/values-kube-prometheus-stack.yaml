@@ -6,6 +6,7 @@
 # ── Prometheus ─────────────────────────────────────────
 prometheus:
   prometheusSpec:
+    priorityClassName: ticketing-priority-platform
     retention: 15d
     storageSpec:
       volumeClaimTemplate:
@@ -77,6 +78,7 @@ prometheus:
 
 # ── Grafana ────────────────────────────────────────────
 grafana:
+  priorityClassName: ticketing-priority-platform
   adminUser: root
   adminPassword: soldesk1.
   env:
@@ -139,6 +141,7 @@ grafana:
 # ── AlertManager ───────────────────────────────────────
 alertmanager:
   alertmanagerSpec:
+    priorityClassName: ticketing-priority-platform
     storage:
       volumeClaimTemplate:
         spec:
@@ -228,6 +231,7 @@ defaultRules:
 
 # ── Prometheus Operator ────────────────────────────────
 prometheusOperator:
+  priorityClassName: ticketing-priority-platform
   resources:
     requests:
       cpu: 50m
@@ -235,3 +239,9 @@ prometheusOperator:
     limits:
       cpu: 200m
       memory: 128Mi
+
+# ── 서브차트(node-exporter/kube-state-metrics)도 플랫폼 우선순위로 ───────
+prometheus-node-exporter:
+  priorityClassName: ticketing-priority-platform
+kube-state-metrics:
+  priorityClassName: ticketing-priority-platform

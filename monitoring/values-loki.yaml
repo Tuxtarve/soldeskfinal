@@ -23,6 +23,7 @@ loki:
     retention_period: 168h          # 7 days
 
 singleBinary:
+  priorityClassName: ticketing-priority-platform
   replicas: 1
   resources:
     requests:

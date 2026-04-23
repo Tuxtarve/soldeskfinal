@@ -37,6 +37,7 @@ echo "=== Installing Promtail ==="
 helm upgrade --install promtail grafana/promtail \
   --namespace monitoring \
   --set "config.clients[0].url=http://loki:3100/loki/api/v1/push" \
+  --set "priorityClassName=ticketing-priority-platform" \
   --wait --timeout 5m
 
 # Grafana ALB Ingress
