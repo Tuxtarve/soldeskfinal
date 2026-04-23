@@ -45,7 +45,7 @@ def get_mypage(request: Request):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT user_id, email, name, phone, created_at FROM users WHERE user_id = %s",
+                "SELECT user_id, email, name, created_at FROM users WHERE user_id = %s",
                 (user_id_int,),
             )
             user = cur.fetchone()
