@@ -79,6 +79,12 @@ prometheus:
 grafana:
   adminUser: root
   adminPassword: soldesk1.
+  env:
+    TZ: Asia/Seoul
+  defaultDashboardsTimezone: Asia/Seoul
+  # RWO PVC(gp3 EBS) 라 RollingUpdate 시 Multi-Attach 데드락. 새 파드는 구 파드가 완전히 사라져야 마운트 가능.
+  deploymentStrategy:
+    type: Recreate
   persistence:
     enabled: true
     storageClassName: gp3
@@ -127,6 +133,8 @@ grafana:
     server:
       root_url: "%(protocol)s://%(domain)s/grafana"
       serve_from_sub_path: true
+    date_formats:
+      default_timezone: Asia/Seoul
 
 # ── AlertManager ───────────────────────────────────────
 alertmanager:
