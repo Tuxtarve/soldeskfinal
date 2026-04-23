@@ -47,3 +47,13 @@ credentials
 
 # Claude Code
 .claude/
+
+# AI 오토스케일 어드바이저 — 실행 산출물 (메트릭/추천/패치 JSON·YAML, 민감정보 포함)
+scripts/data/
+
+# 로컬 AWS CLI 설치 잔여물
+/aws/
+awscliv2.zip
+
+# 쉘에 잘못 저장된 파일 (aws --version && ... 형태의 명령어가 파일명으로 저장)
+aws --version*
