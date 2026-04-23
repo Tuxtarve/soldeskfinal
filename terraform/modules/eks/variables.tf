@@ -18,6 +18,12 @@ variable "sqs_queue_arns" {
   default     = []
 }
 
+variable "assets_bucket_arn" {
+  type        = string
+  description = "S3 assets bucket ARN — db-backup CronJob 가 mysqldump 결과를 backups/ prefix 에 PutObject 한다."
+  default     = ""
+}
+
 variable "app_node_instance_types" {
   type        = list(string)
   description = "워커 노드 인스턴스 타입(평시 1대·max 확장 시 수평 증설)."

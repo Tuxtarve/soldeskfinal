@@ -392,3 +392,44 @@ resource "aws_iam_role_policy" "sqs_access" {
     }]
   })
 }
+
+# DB backup CronJob 용 IRSA — mysqldump 결과를 assets 버킷의 backups/ prefix 에 PutObject.
+# RDS 자체 backup_retention_period=1 (AWS 내부 1일치)을 보강해 시연/감사용 백업 산출물을 S3 에 남긴다.
+resource "aws_iam_role" "db_backup" {
+  name = "${local.name_prefix}-db-backup-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${local.oidc_issuer}:aud" = "sts.amazonaws.com"
+            "${local.oidc_issuer}:sub" = "system:serviceaccount:ticketing:db-backup-sa"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "db_backup" {
+  count = var.assets_bucket_arn == "" ? 0 : 1
+  name  = "${local.name_prefix}-db-backup-policy"
+  role  = aws_iam_role.db_backup.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload",
+      ]
+      Resource = "${var.assets_bucket_arn}/backups/*"
+    }]
+  })
+}

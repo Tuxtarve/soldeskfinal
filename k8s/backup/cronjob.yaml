@@ -1,0 +1,104 @@
+# 매시 정각: mysqldump → S3 assets/backups/ 영구 보관.
+# RDS 자동 백업(backup_retention_period=1)은 AWS 내부 1일치만 → 그 이상의 시연/감사용 산출물은 여기서 만든다.
+# IRSA: db-backup-sa (terraform/modules/eks 의 db_backup role). S3 PutObject 권한은 assets bucket 의 backups/* 로 한정.
+# S3_BUCKET 값은 post_apply_k8s_bootstrap.sh 가 cronjob 에 env patch 로 주입(배포자별 계정 ID 차이 흡수).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: ticketing
+  labels:
+    app: db-backup
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: db-backup-sa
+          restartPolicy: OnFailure
+          volumes:
+            - name: dump
+              emptyDir: {}
+          # mysqldump 결과를 emptyDir 로 떨어뜨린 뒤 메인 컨테이너가 S3 업로드 — 한 이미지에 mysql+awscli 묶지 않기 위함.
+          initContainers:
+            - name: mysqldump
+              image: mysql:8.0
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  TS="$(date -u +%Y%m%dT%H%M%SZ)"
+                  OUT="/backup/${DB_NAME}-${TS}.sql.gz"
+                  echo "[mysqldump] host=${DB_WRITER_HOST} db=${DB_NAME} → ${OUT}"
+                  mysqldump \
+                    -h "${DB_WRITER_HOST}" \
+                    -P "${DB_PORT:-3306}" \
+                    -u "${DB_USER}" \
+                    --password="${DB_PASSWORD}" \
+                    --single-transaction \
+                    --quick \
+                    --routines \
+                    --triggers \
+                    --set-gtid-purged=OFF \
+                    --no-tablespaces \
+                    "${DB_NAME}" \
+                    | gzip -c > "${OUT}"
+                  ls -lh "${OUT}"
+                  echo "${OUT}" > /backup/.dump_path
+              envFrom:
+                - configMapRef:
+                    name: ticketing-config
+                - secretRef:
+                    name: ticketing-secrets
+              volumeMounts:
+                - name: dump
+                  mountPath: /backup
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+          containers:
+            - name: s3-upload
+              image: amazon/aws-cli:2.17.0
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  : "${S3_BUCKET:?S3_BUCKET env is required (post_apply 가 patch)}"
+                  DUMP="$(cat /backup/.dump_path)"
+                  KEY="backups/$(basename "${DUMP}")"
+                  echo "[upload] s3://${S3_BUCKET}/${KEY}"
+                  aws s3 cp "${DUMP}" "s3://${S3_BUCKET}/${KEY}" \
+                    --no-progress \
+                    --metadata "source=db-backup-cronjob"
+                  echo "[done] s3://${S3_BUCKET}/${KEY}"
+              env:
+                - name: AWS_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: ticketing-config
+                      key: AWS_REGION
+                - name: S3_BUCKET
+                  value: "REPLACED_BY_POST_APPLY"
+              volumeMounts:
+                - name: dump
+                  mountPath: /backup
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "300m"

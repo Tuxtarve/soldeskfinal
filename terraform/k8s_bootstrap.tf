@@ -52,6 +52,8 @@ resource "null_resource" "k8s_bootstrap_after_apply" {
       AWS_ACCOUNT_ID              = data.aws_caller_identity.current.account_id
       SQS_ACCESS_ROLE_ARN         = module.eks.sqs_access_role_arn
       CLUSTER_AUTOSCALER_ROLE_ARN = module.eks.cluster_autoscaler_role_arn
+      DB_BACKUP_ROLE_ARN          = module.eks.db_backup_role_arn
+      DB_BACKUP_S3_BUCKET         = module.s3.assets_bucket_id
       TICKETING_NAMESPACE         = var.ticketing_namespace
       TICKETING_CONFIGMAP_NAME    = var.ticketing_configmap_name
       WORKER_DEPLOYMENT_NAME      = var.worker_deployment_name
