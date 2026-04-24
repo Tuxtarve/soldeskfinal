@@ -177,10 +177,14 @@ if [ -f "$TFVARS" ] && grep -q '^alb_listener_arn' "$TFVARS"; then
   fi
 fi
 
-# ── 1. Terraform Apply ──
+# ── 1. Terraform Init + Apply ──
 echo "=========================================="
-echo " [1/14] Terraform Apply"
+echo " [1/14] Terraform Init + Apply"
 echo "=========================================="
+# fork 클론 직후(.terraform 없음) 또는 provider 가 추가된 경우 필수.
+# terraform init 은 idempotent — 이미 초기화된 상태면 즉시 끝나고,
+# 새 provider 만 있을 때 그것만 추가 다운로드한다. -input=false 로 자동화 안전.
+terraform init -input=false
 terraform apply -auto-approve
 
 # ── 2. kubeconfig 설정 ──
