@@ -141,14 +141,84 @@ resource "aws_eks_addon" "vpc_cni" {
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 
+  # ENABLE_PREFIX_DELEGATION + VPC Custom Networking 조합 (AWS 권장 best-practice):
+  #   - prefix delegation: ENI 1개가 /28(16 IP) 단위로 IP 를 받아 파드 밀도↑
+  #   - custom networking: 파드 IP 를 secondary CIDR(100.64.0.0/16) 에서 받아
+  #     노드 subnet(10.0.x.x) IP 고갈을 구조적으로 차단
+  # 두 기능은 직교(orthogonal)라 같이 켜는 것이 표준.
   configuration_values = jsonencode({
     env = {
-      ENABLE_PREFIX_DELEGATION = "true"
-      WARM_PREFIX_TARGET       = "1"
+      ENABLE_PREFIX_DELEGATION           = "true"
+      WARM_PREFIX_TARGET                 = "1"
+      AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG = "true"
+      # ENIConfig 를 노드의 어떤 라벨로 매칭할지 지정.
+      # topology.kubernetes.io/zone 은 kubelet 이 자동 주입하는 표준 AZ 라벨.
+      # → ENIConfig 의 metadata.name 은 AZ 풀네임(ap-northeast-2a 등)이어야 한다.
+      ENI_CONFIG_LABEL_DEF = "topology.kubernetes.io/zone"
     }
   })
 
   depends_on = [aws_eks_cluster.main]
+}
+
+# ── ENIConfig (VPC Custom Networking) ─────────────────────────────────────
+#
+# vpc-cni 애드온이 ENIConfig CRD 를 설치한 직후, AZ 당 1개의 ENIConfig 를 생성한다.
+# 각 ENIConfig 는 (그 AZ 의 pod subnet, pod ENI 에 붙일 SG 목록) 을 선언하고,
+# ipamd 가 노드의 topology.kubernetes.io/zone 라벨과 일치하는 ENIConfig 를
+# 자동 선택해 파드에 secondary IP 를 할당한다.
+#
+# Security Group 선택 근거:
+#   - WAS_SG (var.security_group_id)
+#       * network 모듈의 db_from_was / cache_from_was 가 이 SG 를 source 로 허용.
+#   - EKS cluster SG (aws_eks_cluster.main.vpc_config[0].cluster_security_group_id)
+#       * kubelet↔API server, 노드간 pod 통신, CoreDNS 등 control-plane 경로 전반.
+#       * root main.tf 의 rds_from_eks_cluster_sg / redis_from_eks_cluster_sg 도 허용.
+#   둘을 모두 붙이면 기존 SG 기반 허용 규칙이 pod ENI 에도 그대로 적용된다.
+#
+# 왜 null_resource + kubectl 인가:
+#   - 이 레포는 "Helm/K8s 리소스는 TF provider 대신 쉘 스크립트"로 관리하는 일관 정책.
+#   - kubernetes/helm provider 를 새로 configure 하지 않고 기존 패턴 유지.
+#
+# 재실행 조건:
+#   - pod subnet ID / AZ / SG 중 하나라도 바뀌면 triggers.payload_hash 가 변해
+#     kubectl apply 재실행. ENIConfig 는 declarative 라 apply 가 곧 upsert.
+resource "null_resource" "pod_eni_configs" {
+  triggers = {
+    cluster_name = aws_eks_cluster.main.name
+    region       = var.aws_region
+    payload_hash = md5(jsonencode({
+      subnets = var.pod_subnet_ids
+      azs     = var.pod_subnet_azs
+      sgs = [
+        var.security_group_id,
+        aws_eks_cluster.main.vpc_config[0].cluster_security_group_id,
+      ]
+    }))
+  }
+
+  # vpc-cni 애드온 이후: ENIConfig CRD 가 존재해야 apply 가능.
+  # 노드그룹 이후: 노드가 존재해야 ipamd 가 실제로 ENIConfig 를 적용하기 시작.
+  depends_on = [
+    aws_eks_addon.vpc_cni,
+    aws_eks_node_group.app,
+  ]
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    environment = {
+      CLUSTER_NAME   = aws_eks_cluster.main.name
+      AWS_REGION     = var.aws_region
+      POD_SUBNET_IDS = join(",", var.pod_subnet_ids)
+      POD_SUBNET_AZS = join(",", var.pod_subnet_azs)
+      POD_SG_IDS = join(",", [
+        var.security_group_id,
+        aws_eks_cluster.main.vpc_config[0].cluster_security_group_id,
+      ])
+      AWS_PAGER = ""
+    }
+    command = "tr -d '\\r' < \"${path.module}/scripts/apply_eni_configs.sh\" | bash"
+  }
 }
 
 # 워커 노드 그룹 — CA scale-up 한도는 scaling_config.max_size (AWS ASG). 태그 없으면 CA가 ASG를 못 찾음.

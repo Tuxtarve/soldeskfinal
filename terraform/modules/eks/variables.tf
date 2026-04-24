@@ -2,6 +2,19 @@ variable "env" { type = string }
 variable "aws_region" { type = string }
 variable "subnet_ids" { type = list(string) }
 variable "security_group_id" { type = string }
+
+# VPC Custom Networking 용. 파드 ENI 를 이 서브넷(secondary CIDR)에서 할당하도록
+# ENIConfig(AZ별 1개) 를 생성한다. subnet_ids(노드 subnet)과 별개로 관리된다.
+variable "pod_subnet_ids" {
+  type        = list(string)
+  description = "Pod 전용 서브넷 목록. pod_subnet_azs 와 인덱스 쌍으로 매칭된다."
+}
+
+variable "pod_subnet_azs" {
+  type        = list(string)
+  description = "pod_subnet_ids 각각의 AZ 풀네임(예: ap-northeast-2a). ENIConfig 의 metadata.name 에 그대로 들어가며, 노드의 topology.kubernetes.io/zone 라벨과 매칭된다."
+}
+
 variable "cluster_name" {
   type        = string
   description = "EKS cluster resource name"

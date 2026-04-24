@@ -126,11 +126,16 @@ resource "null_resource" "db_schema_init" {
 }
 
 module "eks" {
-  source            = "./modules/eks"
-  env               = var.env
-  aws_region        = var.aws_region
-  vpc_id            = module.network.vpc_id
-  subnet_ids        = module.network.public_subnet_ids
+  source     = "./modules/eks"
+  env        = var.env
+  aws_region = var.aws_region
+  vpc_id     = module.network.vpc_id
+  # 노드/ELB 용 서브넷(10.0.0.0/16 내 public).
+  subnet_ids = module.network.public_subnet_ids
+  # 파드 전용 서브넷(secondary CIDR 100.64.0.0/16 내). ENIConfig 생성에만 쓰인다.
+  # 노드그룹/EKS 클러스터에는 넘기지 않음 — custom networking 의 전제.
+  pod_subnet_ids    = module.network.pod_subnet_ids
+  pod_subnet_azs    = module.network.pod_subnet_azs
   security_group_id = module.network.eks_sg_id
   cluster_name      = var.eks_cluster_name
   sqs_queue_arns = [
