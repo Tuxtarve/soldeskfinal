@@ -198,10 +198,14 @@ resource "null_resource" "pod_eni_configs" {
   }
 
   # vpc-cni 애드온 이후: ENIConfig CRD 가 존재해야 apply 가능.
-  # 노드그룹 이후: 노드가 존재해야 ipamd 가 실제로 ENIConfig 를 적용하기 시작.
+  # 주의: 반드시 노드 그룹 "이전"에 적용되어야 한다.
+  #   custom networking(AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG=true) 가 켜진 상태에서
+  #   ENIConfig 가 없이 노드가 올라오면 ipamd 가 secondary IP 풀을 못 만들어
+  #   kubelet NotReady → EKS 가 NodeCreationFailure: Unhealthy nodes 로 노드그룹 자체를 실패시킴.
+  # ENIConfig 는 declarative CRD 라서 노드가 없어도 kubectl apply 가능하고,
+  # 노드가 부팅하는 시점에 ipamd 가 자동으로 참조한다.
   depends_on = [
     aws_eks_addon.vpc_cni,
-    aws_eks_node_group.app,
   ]
 
   provisioner "local-exec" {
@@ -245,6 +249,9 @@ resource "aws_eks_node_group" "app" {
     aws_iam_role_policy_attachment.eks_node_cni,
     aws_iam_role_policy_attachment.eks_node_ecr,
     aws_eks_addon.vpc_cni,
+    # custom networking 켠 상태에서는 ENIConfig 가 노드 부팅 전에 깔려 있어야
+    # ipamd 가 정상 초기화됨. 없이 시작하면 NodeCreationFailure.
+    null_resource.pod_eni_configs,
     null_resource.cleanup_vpc_leftovers_post,
   ]
 
