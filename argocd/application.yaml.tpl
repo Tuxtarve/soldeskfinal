@@ -8,8 +8,8 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/sxk34/soldesk.git
-    targetRevision: FINAL
+    repoURL: ${repo_url}
+    targetRevision: ${target_revision}
     path: k8s
   destination:
     server: https://kubernetes.default.svc

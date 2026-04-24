@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # 팀원 자동 세팅 스크립트
 #   - terraform.tfvars 자동 생성 (cognito_domain_prefix + github_repo)
-#   - argocd/application.yaml repoURL 을 현재 git origin 으로 자동 치환
 #   - .env.local 에 DB 비번 저장 (setup-all.sh 가 자동 source)
 #   - GitHub Secret AWS_ACCOUNT_ID 자동 등록 (gh CLI 있을 때)
+#
+# argocd/application.yaml 의 repoURL 은 더 이상 이 스크립트가 건드리지 않는다.
+# terraform/argocd.tf 의 local_file 이 var.github_repo 기반으로
+# argocd/application.rendered.yaml 을 직접 렌더한다 (git 커밋·push 불필요).
 #
 # 사용:  bash scripts/prepare.sh
 # 재실행 안전: 값이 이미 채워져 있으면 변경 없이 skip.
@@ -74,32 +77,7 @@ sed_in_place "s|^github_repo.*|github_repo = \"$OWNER_REPO\"|" "$TFVARS"
 echo "  cognito_domain_prefix = $COGNITO_PREFIX"
 echo "  github_repo           = $OWNER_REPO"
 
-# ── 5. argocd/application.yaml repoURL 자동 치환 + 커밋·푸시 ──
-ARGOCD_APP="argocd/application.yaml"
-NEW_REPO_URL="https://github.com/${OWNER_REPO}.git"
-CURRENT_REPO_URL=$(awk '/^[[:space:]]*repoURL:/{print $2; exit}' "$ARGOCD_APP")
-
-if [[ "$CURRENT_REPO_URL" != "$NEW_REPO_URL" ]]; then
-  sed_in_place "s|repoURL:.*|repoURL: $NEW_REPO_URL|" "$ARGOCD_APP"
-  echo "argocd/application.yaml repoURL → $NEW_REPO_URL"
-
-  if ! git diff --quiet -- "$ARGOCD_APP"; then
-    git add "$ARGOCD_APP"
-    git commit -m "chore(argocd): set repoURL to $OWNER_REPO" >/dev/null
-    BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    echo "origin/$BRANCH 로 push 시도..."
-    if git push origin "$BRANCH"; then
-      echo "  push 완료"
-    else
-      echo "  WARN: push 실패 (권한/네트워크). 이 커밋을 수동으로 push 하세요:"
-      echo "        git push origin $BRANCH"
-    fi
-  fi
-else
-  echo "argocd repoURL 이미 일치 — skip"
-fi
-
-# ── 6. DB 비밀번호 입력 → .env.local ──
+# ── 5. DB 비밀번호 입력 → .env.local ──
 ENV_FILE=".env.local"
 echo ""
 echo "─── RDS 마스터 비밀번호 ────────────────────"
@@ -124,7 +102,7 @@ EOF
   unset DB_PW DB_PW2
 fi
 
-# ── 7. GitHub Secrets 자동 등록 ──
+# ── 6. GitHub Secrets 자동 등록 ──
 echo ""
 echo "─── GitHub Secrets 등록 ──────────────────"
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then

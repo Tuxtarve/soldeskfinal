@@ -47,3 +47,7 @@ credentials
 
 # Claude Code
 .claude/
+
+# ArgoCD Application manifest — terraform 이 argocd/application.yaml.tpl 을 렌더한 결과물.
+# 팀원마다 repoURL(github_repo) 이 달라야 하므로 git 에 커밋하지 않는다.
+argocd/application.rendered.yaml

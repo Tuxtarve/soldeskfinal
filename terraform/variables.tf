@@ -21,9 +21,15 @@ variable "eks_cluster_name" {
 }
 
 variable "github_repo" {
-  description = "GitHub 리포지토리 (owner/repo)"
+  description = "GitHub 리포지토리 (owner/repo). GitHub Actions OIDC trust + ArgoCD Application repoURL 렌더에 사용."
   type        = string
   default     = "your-org/ticketing"
+}
+
+variable "argocd_target_revision" {
+  description = "ArgoCD Application 이 추적할 git 브랜치/태그. argocd/application.yaml.tpl 렌더에 사용."
+  type        = string
+  default     = "FINAL"
 }
 
 variable "enable_s3_hosting_v2_module" {

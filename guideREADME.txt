@@ -121,8 +121,6 @@ gh 없으면 prepare.sh 가 수동 등록 방법을 안내합니다.
   - terraform/terraform.tfvars 생성 + 값 자동 채움
       · cognito_domain_prefix  = myticket-auth-<계정ID 뒷6자리>  (전역 유일 보장)
       · github_repo            = 현재 git origin 에서 자동 감지
-  - argocd/application.yaml 의 repoURL 을 본인 fork 로 교체 후
-    FINAL 브랜치에 자동 commit & push
   - RDS 마스터 비밀번호를 대화형으로 입력받아 .env.local 에 저장
       · setup-all.sh 가 자동으로 source → 매번 export 할 필요 없음
       · .env.local 은 .gitignore 로 제외되어 git 에 안 올라감
