@@ -24,11 +24,13 @@ fi
 cd "$TF_DIR"
 
 # ── 0. DB_PASSWORD 확인 ──
+# 팀원이 prepare.sh 를 까먹고 setup-all.sh 부터 돌리면 여기서 수동 export 하라는
+# 에러로 막혔다. .env.local 이 없으면 그 자리에서 prepare.sh 를 자동 호출해
+# 비번 입력받고 .env.local 생성 → 다시 source. 가이드(2단계 플로우) 그대로 유지.
 if [[ -z "${DB_PASSWORD:-}" ]]; then
-  echo "ERROR: DB_PASSWORD 환경변수가 비었습니다." >&2
-  echo "  → 'bash scripts/prepare.sh' 를 먼저 실행하거나" >&2
-  echo "    수동으로: export DB_PASSWORD='your-password'" >&2
-  exit 1
+  bash "$SCRIPTS/prepare.sh"
+  # shellcheck disable=SC1091
+  source "$ROOT/.env.local"
 fi
 
 # ── 0.1. helm 자동 설치 (install-* 스크립트 3종이 전부 helm 필요) ──
