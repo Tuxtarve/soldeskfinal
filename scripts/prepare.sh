@@ -81,7 +81,10 @@ echo "  github_repo           = $OWNER_REPO"
 ENV_FILE=".env.local"
 echo ""
 echo "─── RDS 마스터 비밀번호 ────────────────────"
-if [[ -f "$ENV_FILE" ]] && grep -q '^DB_PASSWORD=' "$ENV_FILE"; then
+# 실제 파일 내용은 `export DB_PASSWORD=...` 로 시작하므로 `^DB_PASSWORD=` 만
+# 보면 매번 매칭 실패 → 매번 재프롬프트 됨 → 팀원이 "왜 또 물어봐?" 하다가
+# Ctrl+C/Enter 로 .env.local 깨뜨림 → setup-all.sh 가 빈 DB_PASSWORD 로 실패.
+if [[ -f "$ENV_FILE" ]] && grep -qE '^(export[[:space:]]+)?DB_PASSWORD=' "$ENV_FILE"; then
   echo "$ENV_FILE 이미 존재 — 그대로 사용 (새로 받으려면 파일 삭제 후 재실행)"
 else
   echo "규칙: 8자 이상, 대/소문자+숫자+특수문자 조합 권장"
