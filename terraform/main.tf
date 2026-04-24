@@ -114,6 +114,8 @@ resource "null_resource" "db_schema_init" {
       K8S_NAMESPACE    = var.ticketing_namespace
       EKS_CLUSTER_NAME = module.eks.cluster_name
       AWS_REGION       = var.aws_region
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.root}/scripts/init_db_schema_via_k8s.sh\" | bash"
   }

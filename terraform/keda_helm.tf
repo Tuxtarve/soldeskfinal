@@ -33,6 +33,8 @@ resource "null_resource" "apply_ticketing_priority_classes" {
       CLUSTER_NAME = module.eks.cluster_name
       AWS_REGION   = var.aws_region
       PC_FILE      = abspath("${path.root}/../k8s/priorityclass-ticketing.yaml")
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = <<-EOT
 set -euo pipefail
@@ -105,6 +107,8 @@ resource "null_resource" "keda_cleanup_on_destroy" {
       AWS_REGION        = self.triggers.aws_region
       KEDA_NAMESPACE    = "keda"
       KEDA_RELEASE_NAME = "keda"
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
       # destroy가 길어지지 않게 빠르게 정리(필요 시 finalizer 조기 제거)
       KEDA_CLEANUP_WAIT_SEC = "120"
       # 1이면 namespace finalizers 강제 제거(최후 수단). 기본 0.

@@ -4,6 +4,12 @@
 # DB_PASSWORD 환경변수가 필요합니다: export DB_PASSWORD='your-password'
 set -euo pipefail
 
+# AWS CLI v2 가 TTY 환경에서 출력 길이와 무관하게 기본 pager(less/more)로 stdout 을 보내,
+# Git Bash/Windows 등에서 화면 하단에 "(END)" 만 떠 있고 키 입력 대기로 멈추는 증상이
+# 반복적으로 발생한다. 모든 자식 프로세스(terraform local-exec, install-*.sh, helm 의
+# `aws eks get-token` exec 등)가 상속받도록 entry-point 에서 한 번에 비활성화한다.
+export AWS_PAGER=""
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="$ROOT/scripts"
 TF_DIR="$ROOT/terraform"

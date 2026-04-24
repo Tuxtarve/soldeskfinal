@@ -310,6 +310,8 @@ resource "null_resource" "cleanup_vpc_leftovers_before_destroy" {
     environment = {
       NET_VPC_ID = self.triggers.vpc_id
       NET_REGION = self.triggers.region
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.module}/scripts/cleanup_vpc_leftovers_before_destroy.sh\" | bash"
   }

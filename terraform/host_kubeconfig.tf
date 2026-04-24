@@ -25,6 +25,8 @@ resource "null_resource" "host_kubeconfig_sync_after_bootstrap" {
     environment = {
       CLUSTER_NAME = self.triggers.cluster_name
       AWS_REGION   = self.triggers.aws_region
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.module}/scripts/sync_host_kubeconfig.sh\" | bash"
   }
@@ -50,6 +52,8 @@ resource "null_resource" "host_kubeconfig_sync_no_bootstrap" {
     environment = {
       CLUSTER_NAME = self.triggers.cluster_name
       AWS_REGION   = self.triggers.aws_region
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.module}/scripts/sync_host_kubeconfig.sh\" | bash"
   }

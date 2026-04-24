@@ -9,6 +9,10 @@
 # 재실행 안전: 값이 이미 채워져 있으면 변경 없이 skip.
 set -euo pipefail
 
+# AWS CLI v2 기본 pager(less/more) 비활성화. Git Bash 에서 짧은 출력에도 pager 가 떠
+# "(END)" 로 멈추는 증상 방지. 자식 프로세스에 상속되도록 export.
+export AWS_PAGER=""
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

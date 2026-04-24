@@ -19,7 +19,11 @@ resource "aws_cloudfront_distribution" "main" {
   provisioner "local-exec" {
     when        = destroy
     interpreter = ["bash", "-c"]
-    command     = <<-EOT
+    environment = {
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
+    }
+    command = <<-EOT
       set +e
       echo "=== CloudFront 삭제 준비: distribution 비활성화 ==="
       DIST_ID="${self.id}"

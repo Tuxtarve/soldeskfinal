@@ -21,6 +21,8 @@ resource "null_resource" "cleanup_k8s_resources" {
       EKS_CLUSTER_NAME = self.triggers.cluster_name
       EKS_REGION       = self.triggers.region
       EKS_VPC_ID       = self.triggers.vpc_id
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
     }
     # HGFS/Windows 등에서 .tf 가 CRLF 일 때 heredoc 이 깨지므로 스크립트 파일 + 실행 시 CR 제거
     command = "tr -d '\\r' < \"${path.module}/scripts/cleanup_k8s_resources_on_destroy.sh\" | bash"
@@ -44,6 +46,8 @@ resource "null_resource" "cleanup_vpc_leftovers_post" {
     environment = {
       EKS_POST_REGION = self.triggers.region
       EKS_POST_VPC_ID = self.triggers.vpc_id
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.module}/scripts/cleanup_vpc_enis_post_eks_destroy.sh\" | bash"
   }
