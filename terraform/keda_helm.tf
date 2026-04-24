@@ -62,6 +62,8 @@ resource "helm_release" "keda" {
   atomic          = true
   cleanup_on_fail = true
 
+  # QoS: 3개 Deployment(operator / metrics-apiserver / admission-webhooks) 모두 requests=limits 로 Guaranteed.
+  # KEDA가 죽으면 worker-svc-burst 스케일링 자체 멈춰 대량 큐 적체 — 노드 메모리 압박 시 최후까지 살아남아야 함.
   values = [
     yamlencode({
       priorityClassName = "system-cluster-critical"
@@ -69,6 +71,22 @@ resource "helm_release" "keda" {
         create      = true
         name        = "keda-operator"
         annotations = { "eks.amazonaws.com/role-arn" = module.eks.keda_operator_role_arn }
+      }
+      resources = {
+        requests = { cpu = "200m", memory = "300Mi" }
+        limits   = { cpu = "200m", memory = "300Mi" }
+      }
+      metricsServer = {
+        resources = {
+          requests = { cpu = "100m", memory = "150Mi" }
+          limits   = { cpu = "100m", memory = "150Mi" }
+        }
+      }
+      webhooks = {
+        resources = {
+          requests = { cpu = "50m", memory = "100Mi" }
+          limits   = { cpu = "50m", memory = "100Mi" }
+        }
       }
     })
   ]

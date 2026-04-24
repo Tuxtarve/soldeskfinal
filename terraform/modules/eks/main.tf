@@ -283,6 +283,13 @@ resource "aws_eks_addon" "metrics_server" {
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
   # EKS metrics-server 애드온 configuration_values 스키마에 replicaCount(Helm) 없음 — 레플리카는 post_apply_k8s_bootstrap.sh 에서 kubectl scale
+  # QoS: requests=limits → Guaranteed. 죽으면 HPA 메트릭 공급 중단 → read/write-burst HPA 동작 멈춤.
+  configuration_values = jsonencode({
+    resources = {
+      requests = { cpu = "100m", memory = "200Mi" }
+      limits   = { cpu = "100m", memory = "200Mi" }
+    }
+  })
 
   depends_on = [aws_eks_node_group.app]
 }
@@ -323,6 +330,22 @@ resource "aws_eks_addon" "ebs_csi" {
   service_account_role_arn    = aws_iam_role.ebs_csi.arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
+  # QoS: controller 는 PV 프로비저닝 주체라 Guaranteed. node 는 DaemonSet — attach/detach 이벤트만 처리라 가볍게.
+  # 기본 limits 가 비정상적으로 컸음(controller 1312Mi) → 현실적 값으로 고정.
+  configuration_values = jsonencode({
+    controller = {
+      resources = {
+        requests = { cpu = "100m", memory = "200Mi" }
+        limits   = { cpu = "100m", memory = "200Mi" }
+      }
+    }
+    node = {
+      resources = {
+        requests = { cpu = "50m", memory = "100Mi" }
+        limits   = { cpu = "50m", memory = "100Mi" }
+      }
+    }
+  })
 
   depends_on = [
     aws_eks_node_group.app,

@@ -49,10 +49,11 @@ spec:
             # 콘서트 FIFO 샤딩(회차 내부 병렬성). configmap 기본값을 명시적으로 고정해 데모/운영 일관성 확보.
             - name: CONCERT_FIFO_SHARDS
               value: "64"
+          # Burstable 상위: requests 를 burst(256Mi/150m)보다 상향. eviction 시 burst 가 먼저.
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "150m"
+              memory: "500Mi"
+              cpu: "300m"
             limits:
               memory: "768Mi"
               cpu: "1000m"

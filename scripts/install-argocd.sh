@@ -41,15 +41,39 @@ configs:
 server:
   service:
     type: ClusterIP
+  # Burstable 상위: limits 까지 두어 안정 QoS 확보. 단일 replica 라 PDB 무의미.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 controller:
+  # Burstable 상위: 기존 requests 유지, limits 추가.
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 repoServer:
   resources:
     requests:
       cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+# argocd-redis: 현재 BestEffort(resources 없음) → 1순위 eviction 대상. Burstable 로 승격.
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
       memory: 128Mi
 applicationSet:
   enabled: false
