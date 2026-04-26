@@ -97,9 +97,23 @@ GitHub Secrets(AWS_ACCOUNT_ID) 를 prepare.sh 가 자동으로 등록하려면:
 
     gh auth login                    # 브라우저 열려서 로그인
 
-gh 없으면 prepare.sh 가 수동 등록 방법을 안내합니다.
+gh 없으면 prepare.sh 가 수동 설치 방법을 안내합니다.
+■ macOS (Homebrew)
+brew install gh
 
+■ Windows (PowerShell, 관리자 권한)
+winget install -e --id GitHub.cli
 
+■ Ubuntu / WSL / Linux
+sudo apt updatesudo apt install -y gh
+
+■ 설치 확인
+gh --version
+정상 출력 예:
+gh version 2.x.x
+
+■ 로그인 (자동 설정용)
+gh auth login
 ==========================================================
  1. Fork & Clone
 ==========================================================
