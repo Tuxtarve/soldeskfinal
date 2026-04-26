@@ -10,11 +10,11 @@ import os
 import sys
 
 try:
-    import google.generativeai as genai
+    from google import genai
 except ImportError:
     sys.stderr.write(
-        "google-generativeai 패키지가 없습니다. 설치:\n"
-        "  pip3 install --user google-generativeai\n"
+        "google-genai 패키지가 없습니다. 설치:\n"
+        "  pip install google-genai --break-system-packages\n"
     )
     sys.exit(2)
 
@@ -31,14 +31,13 @@ def main() -> int:
         "한 문장으로 자기소개 해줘. 한국어로."
     )
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(MODEL)
+    client = genai.Client(api_key=api_key)
 
     print(f"[model] {MODEL}")
     print(f"[prompt] {prompt}")
     print("-" * 40)
 
-    resp = model.generate_content(prompt)
+    resp = client.models.generate_content(model=MODEL, contents=prompt)
     print(resp.text.strip())
     return 0
 

@@ -26,9 +26,10 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError:
-    sys.stderr.write("pip install --user google-generativeai 필요\n")
+    sys.stderr.write("pip install google-genai --break-system-packages 필요\n")
     sys.exit(2)
 
 ROOT = Path(__file__).resolve().parent
@@ -108,16 +109,16 @@ def build_prompt(context_md: str, metrics_json: dict) -> str:
 
 
 def call_gemini(prompt: str, api_key: str) -> dict:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        MODEL,
-        generation_config={
-            "response_mime_type": "application/json",
-            "response_schema": RESPONSE_SCHEMA,
-            "temperature": 0.2,
-        },
+    client = genai.Client(api_key=api_key)
+    resp = client.models.generate_content(
+        model=MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=RESPONSE_SCHEMA,
+            temperature=0.2,
+        ),
     )
-    resp = model.generate_content(prompt)
     return json.loads(resp.text)
 
 
