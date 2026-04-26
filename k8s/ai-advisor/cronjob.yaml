@@ -1,0 +1,76 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ai-advisor
+  namespace: ticketing
+spec:
+  # 10분마다 실행 (부하 테스트 중에는 5분으로 줄여도 됨)
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid        # 이전 실행이 끝나지 않으면 건너뜀
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # 2분 내 완료 못 하면 중단 (Gemini 호출 포함 여유 있게)
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          serviceAccountName: ai-advisor-sa   # IRSA → CloudWatch/SQS 접근
+          restartPolicy: OnFailure
+
+          containers:
+            - name: ai-advisor
+              # prepare.sh / setup-all.sh 가 ECR URI 를 주입 (실제 배포 시)
+              # 로컬 테스트: docker build -t ai-advisor:latest -f services/ai-advisor/Dockerfile .
+              image: PLACEHOLDER_ECR_URI/ai-advisor:latest
+              imagePullPolicy: Always
+
+              env:
+                # Gemini API 키 — kubectl create secret 으로 생성
+                - name: GEMINI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: ai-advisor-secrets
+                      key: GEMINI_API_KEY
+
+                # Slack 알림 (선택)
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ai-advisor-secrets
+                      key: SLACK_WEBHOOK_URL
+                      optional: true
+
+                # GCP Workload Identity Federation 인증
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: /etc/gcp/config.json
+
+                # GCP 설정
+                - name: GCP_PROJECT_ID
+                  value: "soldesk-gcp"
+
+                # AWS 리전
+                - name: AWS_REGION
+                  value: "ap-northeast-2"
+
+                # Prometheus 서비스 DNS (클러스터 내부 직접 접근)
+                - name: PROMETHEUS_URL
+                  value: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+
+              volumeMounts:
+                - name: gcp-creds
+                  mountPath: /etc/gcp
+                  readOnly: true
+
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+
+          volumes:
+            - name: gcp-creds
+              configMap:
+                name: gcp-credential-config

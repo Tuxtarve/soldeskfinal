@@ -65,6 +65,16 @@ output "sqs_access_role_arn" {
   value = module.eks.sqs_access_role_arn
 }
 
+output "ai_advisor_role_arn" {
+  description = "IRSA role ARN for EKS ai-advisor CronJob (WIF용 바인딩에 필요)."
+  value       = module.ai_advisor.role_arn
+}
+
+output "ai_advisor_ecr_url" {
+  description = "ai-advisor Docker 이미지 ECR URI."
+  value       = aws_ecr_repository.ai_advisor.repository_url
+}
+
 output "keda_operator_role_arn" {
   description = "IRSA for KEDA operator (SQS scaler). Helm release sets keda:keda-operator SA annotation."
   value       = module.eks.keda_operator_role_arn

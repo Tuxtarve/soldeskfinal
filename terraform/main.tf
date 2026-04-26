@@ -138,6 +138,25 @@ module "eks" {
   depends_on              = [module.network]
 }
 
+module "ai_advisor" {
+  source             = "./modules/ai-advisor"
+  cluster_name       = var.eks_cluster_name
+  oidc_provider_arn  = module.eks.oidc_provider_arn
+  oidc_issuer        = module.eks.oidc_issuer
+  namespace          = "ticketing"
+  service_account    = "ai-advisor-sa"
+  sqs_queue_arns     = [module.sqs.reservation_queue_arn, module.sqs.reservation_dlq_arn]
+  depends_on         = [module.eks]
+}
+
+resource "aws_ecr_repository" "ai_advisor" {
+  name                 = "ticketing/ai-advisor"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+  image_scanning_configuration { scan_on_push = true }
+  tags = { Name = "ecr-ai-advisor", Environment = var.env }
+}
+
 module "s3_hosting_v2" {
   source     = "./modules/s3_hosting"
   aws_region = var.aws_region

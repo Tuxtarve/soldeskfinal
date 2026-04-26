@@ -1,0 +1,7 @@
+boto3
+google-genai
+google-cloud-logging
+google-auth[aws]
+requests
+pyyaml
+kubernetes

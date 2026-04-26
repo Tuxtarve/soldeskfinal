@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gcp-credential-config
+  namespace: ticketing
+data:
+  # setup-wif.sh 실행 시 k8s/ai-advisor/gcp-credential-config.json 이 생성됨.
+  # 아래 내용을 그 파일의 내용으로 교체하거나:
+  #   kubectl create configmap gcp-credential-config \
+  #     --from-file=config.json=k8s/ai-advisor/gcp-credential-config.json \
+  #     -n ticketing
+  config.json: |
+    PLACEHOLDER_GCP_CREDENTIAL_CONFIG

@@ -413,7 +413,114 @@ Gemini API 키 발급:
 
 
 ==========================================================
- G-3. 데이터 관리
+ G-3. EKS CronJob 자동화 (AWS → GCP 완전 자동)
+==========================================================
+
+[이 섹션이 하는 일]
+로컬 PC 없이 EKS 내부에서 10분마다 자동으로:
+  메트릭 수집(Prometheus/CloudWatch) → GCP Cloud Logging 전송 → Gemini 추천 → 결과 GCP 전송 → Slack 알림
+
+[인증 방식]
+  AWS  →  IRSA (IAM 역할, 자격증명 불필요)
+  GCP  →  Workload Identity Federation (서비스 계정 키 없음)
+
+──────────────────────────────────────────────────────────
+[G-3-1] terraform apply (IRSA 역할 + ECR 생성)
+──────────────────────────────────────────────────────────
+  cd terraform
+  terraform apply -target=module.ai_advisor -target=aws_ecr_repository.ai_advisor
+
+  # IRSA 역할 ARN 확인
+  terraform output ai_advisor_role_arn
+  terraform output ai_advisor_ecr_url
+
+──────────────────────────────────────────────────────────
+[G-3-2] GCP Workload Identity Federation 세팅 (한 번만)
+──────────────────────────────────────────────────────────
+  bash scripts/setup-wif.sh
+  # → k8s/ai-advisor/gcp-credential-config.json 생성됨
+
+  # IRSA 역할 ARN 바인딩 (5번 단계 완성)
+  IRSA_ROLE_ARN=$(cd terraform && terraform output -raw ai_advisor_role_arn)
+  IRSA_ROLE_ARN=$IRSA_ROLE_ARN bash scripts/setup-wif.sh
+
+──────────────────────────────────────────────────────────
+[G-3-3] k8s/ai-advisor/serviceaccount.yaml ARN 교체
+──────────────────────────────────────────────────────────
+  ROLE_ARN=$(cd terraform && terraform output -raw ai_advisor_role_arn)
+  # serviceaccount.yaml 의 PLACEHOLDER_AI_ADVISOR_ROLE_ARN 을 $ROLE_ARN 으로 교체
+
+  ■ macOS / Linux:
+    sed -i '' "s|PLACEHOLDER_AI_ADVISOR_ROLE_ARN|$ROLE_ARN|" k8s/ai-advisor/serviceaccount.yaml
+
+  ■ Windows (PowerShell):
+    $roleArn = terraform output -raw ai_advisor_role_arn
+    (Get-Content k8s/ai-advisor/serviceaccount.yaml) -replace 'PLACEHOLDER_AI_ADVISOR_ROLE_ARN', $roleArn |
+      Set-Content k8s/ai-advisor/serviceaccount.yaml
+
+──────────────────────────────────────────────────────────
+[G-3-4] Docker 이미지 빌드 → ECR push
+──────────────────────────────────────────────────────────
+  ECR_URL=$(cd terraform && terraform output -raw ai_advisor_ecr_url)
+  AWS_REGION=ap-northeast-2
+  AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+
+  # ECR 로그인
+  aws ecr get-login-password --region $AWS_REGION | \
+    docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+  # 빌드 (repo 루트에서 실행)
+  docker build -t ai-advisor:latest -f services/ai-advisor/Dockerfile .
+  docker tag ai-advisor:latest ${ECR_URL}:latest
+  docker push ${ECR_URL}:latest
+
+  # cronjob.yaml 의 PLACEHOLDER_ECR_URI 교체
+  ■ macOS / Linux:
+    sed -i '' "s|PLACEHOLDER_ECR_URI/ai-advisor:latest|${ECR_URL}:latest|" k8s/ai-advisor/cronjob.yaml
+
+  ■ Windows (PowerShell):
+    (Get-Content k8s/ai-advisor/cronjob.yaml) -replace 'PLACEHOLDER_ECR_URI/ai-advisor:latest', "$ecrUrl`:latest" |
+      Set-Content k8s/ai-advisor/cronjob.yaml
+
+──────────────────────────────────────────────────────────
+[G-3-5] K8s 리소스 배포
+──────────────────────────────────────────────────────────
+  # GCP credential config → ConfigMap 생성
+  kubectl create configmap gcp-credential-config \
+    --from-file=config.json=k8s/ai-advisor/gcp-credential-config.json \
+    -n ticketing --dry-run=client -o yaml | kubectl apply -f -
+
+  # GEMINI_API_KEY Secret 생성
+  kubectl create secret generic ai-advisor-secrets \
+    --from-literal=GEMINI_API_KEY=발급받은_키 \
+    -n ticketing
+
+  # (선택) Slack Webhook 추가
+  kubectl patch secret ai-advisor-secrets -n ticketing \
+    --patch='{"stringData":{"SLACK_WEBHOOK_URL":"https://hooks.slack.com/services/..."}}'
+
+  # CronJob + ServiceAccount 배포
+  kubectl apply -k k8s/ai-advisor/
+
+  # 배포 확인
+  kubectl get cronjob -n ticketing
+  kubectl get sa ai-advisor-sa -n ticketing
+
+──────────────────────────────────────────────────────────
+[G-3-6] 즉시 실행 테스트 (10분 기다리지 않고)
+──────────────────────────────────────────────────────────
+  kubectl create job ai-advisor-test \
+    --from=cronjob/ai-advisor -n ticketing
+
+  # 로그 확인
+  kubectl logs -n ticketing -l job-name=ai-advisor-test -f
+
+  # GCP Logs Explorer 에서 확인
+  # eks-metrics          → EKS 메트릭
+  # gemini-recommendations → Gemini 추천 결과
+
+==========================================================
+ G-4. 데이터 관리
 ==========================================================
 
 scripts/data/ 디렉터리는 .gitignore 로 제외되어 있습니다.
