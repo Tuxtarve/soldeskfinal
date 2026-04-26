@@ -1,0 +1,16 @@
+# AI Advisor 파이프라인 필요 패키지
+# 설치: pip install -r scripts/requirements.txt --break-system-packages
+#   또는: pip install -r scripts/requirements.txt  (가상환경 사용 시)
+
+# AWS
+boto3
+
+# GCP
+google-genai
+google-cloud-logging
+
+# Kubernetes / 메트릭 수집
+requests
+
+# 추천 → 패치 변환
+pyyaml

@@ -258,17 +258,35 @@ AWS 인프라는 전혀 건드리지 않습니다.
 ──────────────────────────────────────────────────────────
 [G-0-B] Python 패키지 설치
 ──────────────────────────────────────────────────────────
-■ macOS / Linux
-    pip install google-genai pyyaml --break-system-packages
+  pip install -r scripts/requirements.txt --break-system-packages
 
-■ Windows (Git Bash)
-    pip install google-genai pyyaml
+  (가상환경 사용 시 --break-system-packages 생략)
+
+■ Windows (PowerShell 또는 Git Bash)
+  pip install -r scripts/requirements.txt
 
 확인:
-    python3 -c "from google import genai; print('OK')"
+    python3 -c "from google import genai; from google.cloud import logging; print('OK')"
 
 ──────────────────────────────────────────────────────────
-[G-0-C] .env.local 생성 (git 에 올라가지 않음)
+[G-0-C] GCP 인증 — ADC (서비스 계정 키 불필요)
+──────────────────────────────────────────────────────────
+서비스 계정 키 대신 Application Default Credentials(ADC) 방식 사용.
+gcloud auth application-default login 한 번으로 Python SDK 가 자동 인증됨.
+
+    gcloud auth login
+    gcloud config set project soldesk-gcp
+    gcloud auth application-default login   ← 이것이 핵심 (SDK 인증용)
+
+  → 브라우저에서 구글 로그인 → 자격증명이 로컬에 자동 저장됨
+  → Windows: %APPDATA%\gcloud\application_default_credentials.json
+  → macOS/Linux: ~/.config/gcloud/application_default_credentials.json
+
+확인:
+    python3 -c "from google.cloud import logging; logging.Client(project='soldesk-gcp'); print('ADC OK')"
+
+──────────────────────────────────────────────────────────
+[G-0-D] .env.local 생성 (git 에 올라가지 않음)
 ──────────────────────────────────────────────────────────
 프로젝트 루트에 .env.local 파일을 만들고 아래 내용 입력.
 이 파일은 .gitignore 로 제외되어 있어 git 에 절대 올라가지 않습니다.
@@ -282,9 +300,12 @@ AWS 인프라는 전혀 건드리지 않습니다.
 Gemini API 키 발급:
   https://aistudio.google.com → "Get API key" → 키 복사
 
-연결 확인:
-    source .env.local
-    python3 scripts/gemini_ping.py   # AI 응답 나오면 OK
+■ macOS / Linux 연결 확인:
+    source .env.local && python3 scripts/gemini_ping.py
+
+■ Windows (PowerShell) 연결 확인:
+    $env:GEMINI_API_KEY="발급받은_키_입력"
+    python3 scripts/gemini_ping.py
 
 
 ==========================================================
@@ -309,11 +330,17 @@ Gemini API 키 발급:
 ──────────────────────────────────────────────────────────
 [G-2-1] 메트릭 수집
 ──────────────────────────────────────────────────────────
+■ macOS / Linux
     source .env.local
-    bash scripts/collect_metrics.sh
+    python3 scripts/collect_metrics.py
+
+■ Windows (PowerShell)
+    $env:GEMINI_API_KEY="키값"
+    python3 scripts/collect_metrics.py
 
   → scripts/data/metrics-<타임스탬프>.json 생성
-  → EKS 노드·Pod·HPA·KEDA·SQS 깊이를 하나의 JSON 으로 압축
+  → EKS 노드·Pod·HPA·KEDA·SQS + Prometheus 트렌드 + CloudWatch RDS/Redis
+  → AWS → 로컬 → GCP 흐름: kubectl/boto3 로 AWS 수집 후 SDK 로 GCP 전송
 
 ──────────────────────────────────────────────────────────
 [G-2-2] Gemini 추천 받기
@@ -366,12 +393,22 @@ Gemini API 키 발급:
 ──────────────────────────────────────────────────────────
 [G-2-7] 한 방 실행 (전체 파이프라인)
 ──────────────────────────────────────────────────────────
+■ macOS / Linux
     source .env.local && \
-    bash scripts/collect_metrics.sh && \
+    python3 scripts/collect_metrics.py && \
     python3 scripts/push_metrics_to_cloud_logging.py && \
     python3 scripts/recommend_scaling.py && \
     python3 scripts/recommendation_to_patches.py && \
     python3 scripts/push_to_cloud_logging.py && \
+    python3 scripts/notify.py
+
+■ Windows (PowerShell — 세미콜론으로 이어서 실행)
+    $env:GEMINI_API_KEY="키값"; $env:SLACK_WEBHOOK_URL="웹훅URL"
+    python3 scripts/collect_metrics.py; `
+    python3 scripts/push_metrics_to_cloud_logging.py; `
+    python3 scripts/recommend_scaling.py; `
+    python3 scripts/recommendation_to_patches.py; `
+    python3 scripts/push_to_cloud_logging.py; `
     python3 scripts/notify.py
 
 
