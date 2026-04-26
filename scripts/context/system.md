@@ -94,7 +94,26 @@ GitOps: ArgoCD
 - 멀티 리전 확장
 - **파괴적 변경**: RDS 교체, EKS 재생성, 데이터 마이그레이션
 
-## J. 출력 스키마 (엄격)
+## J. 메트릭 스냅샷 필드 해설 (동적 입력 참조용)
+
+동적으로 주입되는 메트릭 JSON(§L)의 각 필드 의미. 빈 배열/객체는 수집 실패이므로 해당 항목 추천 제외.
+
+| 필드 | 설명 | 활용 포인트 |
+|------|------|------------|
+| `nodeTop[].cpuPct` | 노드 CPU 사용률 % | 60% 이상이면 스케줄 여유 부족 신호 |
+| `hpa[].currentMetrics` | HPA 가 실제로 보는 utilization | target 대비 비율로 scale 방향 판단 |
+| `hpa[].desiredReplicas` | HPA 계산 결과 — 실제 적용과 다를 수 있음 | currentReplicas 와 차이 크면 stabilization 문제 |
+| `sqs.ApproximateNumberOfMessages` | SQS 대기 메시지 수 | KEDA queueLength 기준 초과 여부 판단 |
+| `prometheus.cpuRatePerContainer` | 5분 이동평균 CPU 사용 코어 수 | requests 대비 실사용 비교 → request 저평가 탐지 |
+| `prometheus.memBytesPerContainer` | working set 메모리 실사용량 (bytes) | limits 대비 비율 계산 → OOMKill 리스크 |
+| `prometheus.podRestarts` | 누적 재시작 횟수 | ≥3 이면 OOMKill/CrashLoop 의심 |
+| `prometheus.hpaDesiredTrend15m` | HPA desired 15분 시계열 | 반복적 scaleUp/Down → stabilizationWindow 문제 |
+| `cloudwatchRds.connections15m` | RDS 커넥션 수 최근 15분 | max_connections(200) 대비 여유 계산 |
+| `cloudwatchRds.cpu15m` | RDS CPU % | 70% 이상이면 쿼리 최적화 or scale up 신호 |
+| `cloudwatchRedis.bytesUsed15m` | Redis 메모리 사용량 (bytes) | maxmemory 한계(약 500MiB) 대비 비율 |
+| `cloudwatchRedis.evictions15m` | Redis eviction 발생 건수 | > 0 이면 maxmemory-policy 점검 필요 |
+
+## K. 출력 스키마 (엄격)
 
 ```json
 {

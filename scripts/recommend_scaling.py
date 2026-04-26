@@ -99,12 +99,14 @@ def build_prompt(context_md: str, metrics_json: dict) -> str:
 
 ## M. 요청
 
-§H 의 12개 항목을 기준으로 §J 스키마에 맞춰 추천하라.
+§H 의 12개 항목을 기준으로 §K 스키마에 맞춰 추천하라.
 - 서비스별(read-api / write-api / worker-svc)로 타겟을 분리하라.
 - §G 고정 결정은 변경 금지. §I 범위 밖 금지.
 - 파괴적 변경(`risk:"high"`)은 `priority:"watch"` 로만 제안.
 - 확신 없으면 `confidence:"low"` + openQuestions 에 추가.
 - `from`/`to` 는 문자열로 표기 (예: "23", "10", "55%", "100m", "256Mi").
+- §J 의 필드 해설을 참고해 prometheus / cloudwatch 데이터를 적극 활용하라.
+- 빈 배열/객체 필드는 수집 실패로 간주하고 해당 항목 추천에서 제외하라.
 """
 
 

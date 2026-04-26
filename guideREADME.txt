@@ -338,16 +338,25 @@ Gemini API 키 발급:
     kubectl apply -n ticketing -f scripts/data/patches-<ts>/00-hpa-read-api.yaml
 
 ──────────────────────────────────────────────────────────
-[G-2-4] GCP Cloud Logging 전송
+[G-2-4] 메트릭 → GCP Cloud Logging 전송 (원본 보관)
+──────────────────────────────────────────────────────────
+    python3 scripts/push_metrics_to_cloud_logging.py
+
+  → EKS 메트릭 스냅샷(Prometheus + CloudWatch 포함)을 GCP 에 보관
+  → GCP 콘솔 → Logging → Logs Explorer 에서 조회:
+      logName="projects/soldesk-gcp/logs/eks-metrics"
+
+──────────────────────────────────────────────────────────
+[G-2-5] 추천 → GCP Cloud Logging 전송
 ──────────────────────────────────────────────────────────
     python3 scripts/push_to_cloud_logging.py
 
-  → 추천 JSON 을 GCP Cloud Logging 으로 전송
+  → Gemini 추천 JSON 을 GCP Cloud Logging 으로 전송
   → GCP 콘솔 → Logging → Logs Explorer 에서 조회:
       logName="projects/soldesk-gcp/logs/gemini-recommendations"
 
 ──────────────────────────────────────────────────────────
-[G-2-5] Slack 알림 (선택 — SLACK_WEBHOOK_URL 설정 시)
+[G-2-6] Slack 알림 (선택 — SLACK_WEBHOOK_URL 설정 시)
 ──────────────────────────────────────────────────────────
     python3 scripts/notify.py
 
@@ -355,10 +364,11 @@ Gemini API 키 발급:
   → SLACK_WEBHOOK_URL 미설정 시 stdout 출력으로 대체
 
 ──────────────────────────────────────────────────────────
-[G-2-6] 한 방 실행 (전체 파이프라인)
+[G-2-7] 한 방 실행 (전체 파이프라인)
 ──────────────────────────────────────────────────────────
     source .env.local && \
     bash scripts/collect_metrics.sh && \
+    python3 scripts/push_metrics_to_cloud_logging.py && \
     python3 scripts/recommend_scaling.py && \
     python3 scripts/recommendation_to_patches.py && \
     python3 scripts/push_to_cloud_logging.py && \
