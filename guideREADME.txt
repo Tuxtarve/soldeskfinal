@@ -210,3 +210,167 @@ gh 없으면 prepare.sh 가 수동 등록 방법을 안내합니다.
   - terraform apply 후 'terraform output github_actions_role_arn' 값을
     GitHub Secret AWS_ROLE_ARN 에 등록
   (기본 배포에는 불필요 — setup-all.sh 가 이미지 push 까지 전부 수행)
+
+
+==========================================================
+ GCP AI Advisor 가이드 (AWS 배포 완료 후 진행)
+==========================================================
+
+[이 가이드가 하는 일]
+EKS 클러스터의 실시간 메트릭을 수집해 Gemini AI 에게 분석을 맡기고,
+오토스케일 추천 결과를 GCP Cloud Logging 에 저장 + Slack 으로 알림.
+AWS 인프라는 전혀 건드리지 않습니다.
+
+[전체 흐름]
+  collect_metrics.sh  →  recommend_scaling.py  →  recommendation_to_patches.py
+                                                →  push_to_cloud_logging.py
+                                                →  notify.py (Slack)
+
+[결과물]
+  - scripts/data/metrics-<ts>.json          EKS/SQS 스냅샷
+  - scripts/data/recommendation-<ts>.json   Gemini 추천 JSON
+  - scripts/data/patches-<ts>/              Kustomize 패치 YAML (바로 적용 가능)
+  - GCP Logs Explorer                       추천 이력 영구 보관
+  - Slack (선택)                            priority:now 항목 즉시 알림
+
+
+==========================================================
+ G-0. 사전 준비물 (한 번만)
+==========================================================
+
+──────────────────────────────────────────────────────────
+[G-0-A] gcloud CLI 설치
+──────────────────────────────────────────────────────────
+■ macOS (Homebrew)
+    brew install --cask google-cloud-sdk
+
+■ Windows (PowerShell 관리자 권한)
+    winget install -e --id Google.CloudSDK
+  → 설치 후 PowerShell 재시작.
+
+■ Ubuntu / WSL / Linux
+    curl https://sdk.cloud.google.com | bash
+    exec -l $SHELL
+
+확인:
+    gcloud --version          # 버전 나오면 OK
+
+──────────────────────────────────────────────────────────
+[G-0-B] Python 패키지 설치
+──────────────────────────────────────────────────────────
+■ macOS / Linux
+    pip install google-genai pyyaml --break-system-packages
+
+■ Windows (Git Bash)
+    pip install google-genai pyyaml
+
+확인:
+    python3 -c "from google import genai; print('OK')"
+
+──────────────────────────────────────────────────────────
+[G-0-C] .env.local 생성 (git 에 올라가지 않음)
+──────────────────────────────────────────────────────────
+프로젝트 루트에 .env.local 파일을 만들고 아래 내용 입력.
+이 파일은 .gitignore 로 제외되어 있어 git 에 절대 올라가지 않습니다.
+
+    GEMINI_API_KEY=발급받은_키_입력
+    GEMINI_MODEL=gemini-2.5-flash
+
+    # Slack 알림 쓰려면 주석 해제 후 URL 입력
+    # SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+
+Gemini API 키 발급:
+  https://aistudio.google.com → "Get API key" → 키 복사
+
+연결 확인:
+    source .env.local
+    python3 scripts/gemini_ping.py   # AI 응답 나오면 OK
+
+
+==========================================================
+ G-1. GCP 로그인 및 프로젝트 설정
+==========================================================
+
+    gcloud auth login
+    gcloud config set project soldesk-gcp
+
+확인:
+    gcloud config get-value project      # soldesk-gcp 나오면 OK
+    gcloud logging logs list             # 로그 목록 조회 되면 OK
+
+※ setup-all.sh 실행 중 기다리는 동안 미리 해두면 시간 절약됩니다.
+
+
+==========================================================
+ G-2. AI Advisor 파이프라인 실행
+==========================================================
+※ EKS 클러스터가 Running 상태여야 합니다 (setup-all.sh 완료 후).
+
+──────────────────────────────────────────────────────────
+[G-2-1] 메트릭 수집
+──────────────────────────────────────────────────────────
+    source .env.local
+    bash scripts/collect_metrics.sh
+
+  → scripts/data/metrics-<타임스탬프>.json 생성
+  → EKS 노드·Pod·HPA·KEDA·SQS 깊이를 하나의 JSON 으로 압축
+
+──────────────────────────────────────────────────────────
+[G-2-2] Gemini 추천 받기
+──────────────────────────────────────────────────────────
+    python3 scripts/recommend_scaling.py
+
+  → Gemini 2.5 Flash 가 메트릭을 분석해 스케일링 추천 생성
+  → scripts/data/recommendation-<타임스탬프>.json 저장
+  → 터미널에 우선순위별 요약 표 출력 (NOW / WATCH / LATER)
+
+──────────────────────────────────────────────────────────
+[G-2-3] Kustomize 패치 파일 생성
+──────────────────────────────────────────────────────────
+    python3 scripts/recommendation_to_patches.py
+
+  → scripts/data/patches-<타임스탬프>/ 디렉터리 생성
+  → HPA·Deployment·KEDA 등 Kubernetes 리소스별 YAML 파일 자동 생성
+  → 적용 전 반드시 README.md 확인 후 수동 검토
+
+패치 적용 예시 (검토 후):
+    kubectl apply -n ticketing --dry-run=server -f scripts/data/patches-<ts>/00-hpa-read-api.yaml
+    kubectl apply -n ticketing -f scripts/data/patches-<ts>/00-hpa-read-api.yaml
+
+──────────────────────────────────────────────────────────
+[G-2-4] GCP Cloud Logging 전송
+──────────────────────────────────────────────────────────
+    python3 scripts/push_to_cloud_logging.py
+
+  → 추천 JSON 을 GCP Cloud Logging 으로 전송
+  → GCP 콘솔 → Logging → Logs Explorer 에서 조회:
+      logName="projects/soldesk-gcp/logs/gemini-recommendations"
+
+──────────────────────────────────────────────────────────
+[G-2-5] Slack 알림 (선택 — SLACK_WEBHOOK_URL 설정 시)
+──────────────────────────────────────────────────────────
+    python3 scripts/notify.py
+
+  → priority:now 항목만 Slack 채널로 알림 전송
+  → SLACK_WEBHOOK_URL 미설정 시 stdout 출력으로 대체
+
+──────────────────────────────────────────────────────────
+[G-2-6] 한 방 실행 (전체 파이프라인)
+──────────────────────────────────────────────────────────
+    source .env.local && \
+    bash scripts/collect_metrics.sh && \
+    python3 scripts/recommend_scaling.py && \
+    python3 scripts/recommendation_to_patches.py && \
+    python3 scripts/push_to_cloud_logging.py && \
+    python3 scripts/notify.py
+
+
+==========================================================
+ G-3. 데이터 관리
+==========================================================
+
+scripts/data/ 디렉터리는 .gitignore 로 제외되어 있습니다.
+메트릭·추천·패치 파일이 누적되므로 주기적으로 정리하세요.
+
+    ls scripts/data/                     # 누적 파일 확인
+    rm scripts/data/metrics-*.json       # 오래된 메트릭 삭제 (선택)
