@@ -90,6 +90,14 @@ cat >"$VALUES" <<EOF
 fullnameOverride: cluster-autoscaler
 nameOverride: cluster-autoscaler
 priorityClassName: system-cluster-critical
+# QoS: requests=limits → Guaranteed. CA 가 죽으면 노드 scale-up 불가 → 연쇄 장애라 최후 생존.
+resources:
+  requests:
+    cpu: 100m
+    memory: 300Mi
+  limits:
+    cpu: 100m
+    memory: 300Mi
 image:
   repository: registry.k8s.io/autoscaling/cluster-autoscaler
   # EKS 1.30.x 에 맞춰 pin (신버전은 ResourceClaim/DeviceClass 등으로 로그가 오염되고 동작이 불안정할 수 있음)

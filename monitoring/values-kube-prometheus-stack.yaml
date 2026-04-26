@@ -6,6 +6,7 @@
 # ── Prometheus ─────────────────────────────────────────
 prometheus:
   prometheusSpec:
+    priorityClassName: ticketing-priority-platform
     retention: 15d
     storageSpec:
       volumeClaimTemplate:
@@ -15,9 +16,10 @@ prometheus:
           resources:
             requests:
               storage: 20Gi
+    # CPU 실사용 ~35m — requests 를 절반으로 축소해 노드 여유 확보. limits/retention/mem 유지.
     resources:
       requests:
-        cpu: 200m
+        cpu: 100m
         memory: 400Mi
       limits:
         cpu: 500m
@@ -77,19 +79,27 @@ prometheus:
 
 # ── Grafana ────────────────────────────────────────────
 grafana:
+  priorityClassName: ticketing-priority-platform
   adminUser: root
   adminPassword: soldesk1.
+  env:
+    TZ: Asia/Seoul
+  defaultDashboardsTimezone: Asia/Seoul
+  # RWO PVC(gp3 EBS) 라 RollingUpdate 시 Multi-Attach 데드락. 새 파드는 구 파드가 완전히 사라져야 마운트 가능.
+  deploymentStrategy:
+    type: Recreate
   persistence:
     enabled: true
     storageClassName: gp3
     size: 5Gi
+  # 실사용 12m/274Mi — CPU req 절반, mem req 는 실사용 반영해 올림. mem limit 을 400 으로 올려 OOM 방지.
   resources:
     requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 300m
+      cpu: 50m
       memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 400Mi
   service:
     type: ClusterIP
 
@@ -127,10 +137,13 @@ grafana:
     server:
       root_url: "%(protocol)s://%(domain)s/grafana"
       serve_from_sub_path: true
+    date_formats:
+      default_timezone: Asia/Seoul
 
 # ── AlertManager ───────────────────────────────────────
 alertmanager:
   alertmanagerSpec:
+    priorityClassName: ticketing-priority-platform
     storage:
       volumeClaimTemplate:
         spec:
@@ -220,10 +233,34 @@ defaultRules:
 
 # ── Prometheus Operator ────────────────────────────────
 prometheusOperator:
+  priorityClassName: ticketing-priority-platform
+  # 실사용 3m/20Mi — 과다 requests 축소.
   resources:
     requests:
+      cpu: 20m
+      memory: 48Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# ── 서브차트(node-exporter/kube-state-metrics)도 플랫폼 우선순위로 ───────
+# 실사용이 작으나 requests 없으면 BestEffort QoS 라 노드 압박 시 먼저 evict.
+# 작은 값이라도 명시해 Burstable QoS + 스케줄링 예측성 확보.
+prometheus-node-exporter:
+  priorityClassName: ticketing-priority-platform
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
       cpu: 50m
       memory: 64Mi
+kube-state-metrics:
+  priorityClassName: ticketing-priority-platform
+  resources:
+    requests:
+      cpu: 20m
+      memory: 48Mi
     limits:
-      cpu: 200m
+      cpu: 100m
       memory: 128Mi

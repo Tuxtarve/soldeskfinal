@@ -47,11 +47,15 @@ resource "null_resource" "k8s_bootstrap_after_apply" {
       POST_APPLY_SQS_QUEUE_URL          = module.sqs.reservation_queue_url
       EKS_CLUSTER_NAME                  = module.eks.cluster_name
       AWS_REGION                        = var.aws_region
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
       # Windows strict state lock 회피: install-cluster-autoscaler / post_apply 가
       # nested `terraform output` 으로 읽던 값을 부모 apply 에서 직접 주입.
       AWS_ACCOUNT_ID              = data.aws_caller_identity.current.account_id
       SQS_ACCESS_ROLE_ARN         = module.eks.sqs_access_role_arn
       CLUSTER_AUTOSCALER_ROLE_ARN = module.eks.cluster_autoscaler_role_arn
+      DB_BACKUP_ROLE_ARN          = module.eks.db_backup_role_arn
+      DB_BACKUP_S3_BUCKET         = module.s3.assets_bucket_id
       TICKETING_NAMESPACE         = var.ticketing_namespace
       TICKETING_CONFIGMAP_NAME    = var.ticketing_configmap_name
       WORKER_DEPLOYMENT_NAME      = var.worker_deployment_name

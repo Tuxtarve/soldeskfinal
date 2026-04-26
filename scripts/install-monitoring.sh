@@ -34,9 +34,15 @@ helm upgrade --install loki grafana/loki \
   --wait --timeout 5m
 
 echo "=== Installing Promtail ==="
+# 실사용 10m/40Mi — Burstable QoS + 스케줄링 예측성 확보용 requests 명시.
 helm upgrade --install promtail grafana/promtail \
   --namespace monitoring \
   --set "config.clients[0].url=http://loki:3100/loki/api/v1/push" \
+  --set "priorityClassName=ticketing-priority-platform" \
+  --set "resources.requests.cpu=20m" \
+  --set "resources.requests.memory=64Mi" \
+  --set "resources.limits.cpu=100m" \
+  --set "resources.limits.memory=128Mi" \
   --wait --timeout 5m
 
 # Grafana ALB Ingress

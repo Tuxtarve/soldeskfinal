@@ -58,10 +58,11 @@ spec:
                 name: ticketing-config
             - secretRef:
                 name: ticketing-secrets
+          # Burstable 상위: requests 를 burst 파드(100m/128Mi)보다 크게 두어 메모리 eviction 랭킹상 burst 가 먼저 죽게 유도.
           resources:
             requests:
-              memory: "128Mi"
-              cpu: "100m"
+              memory: "200Mi"
+              cpu: "200m"
             limits:
               memory: "256Mi"
               cpu: "300m"

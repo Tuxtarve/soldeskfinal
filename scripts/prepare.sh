@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # 팀원 자동 세팅 스크립트
 #   - terraform.tfvars 자동 생성 (cognito_domain_prefix + github_repo)
-#   - argocd/application.yaml repoURL 을 현재 git origin 으로 자동 치환
 #   - .env.local 에 DB 비번 저장 (setup-all.sh 가 자동 source)
 #   - GitHub Secret AWS_ACCOUNT_ID 자동 등록 (gh CLI 있을 때)
+#
+# argocd/application.yaml 의 repoURL 은 더 이상 이 스크립트가 건드리지 않는다.
+# terraform/argocd.tf 의 local_file 이 var.github_repo 기반으로
+# argocd/application.rendered.yaml 을 직접 렌더한다 (git 커밋·push 불필요).
 #
 # 사용:  bash scripts/prepare.sh
 # 재실행 안전: 값이 이미 채워져 있으면 변경 없이 skip.
 set -euo pipefail
+
+# AWS CLI v2 기본 pager(less/more) 비활성화. Git Bash 에서 짧은 출력에도 pager 가 떠
+# "(END)" 로 멈추는 증상 방지. 자식 프로세스에 상속되도록 export.
+export AWS_PAGER=""
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -70,36 +77,14 @@ sed_in_place "s|^github_repo.*|github_repo = \"$OWNER_REPO\"|" "$TFVARS"
 echo "  cognito_domain_prefix = $COGNITO_PREFIX"
 echo "  github_repo           = $OWNER_REPO"
 
-# ── 5. argocd/application.yaml repoURL 자동 치환 + 커밋·푸시 ──
-ARGOCD_APP="argocd/application.yaml"
-NEW_REPO_URL="https://github.com/${OWNER_REPO}.git"
-CURRENT_REPO_URL=$(awk '/^[[:space:]]*repoURL:/{print $2; exit}' "$ARGOCD_APP")
-
-if [[ "$CURRENT_REPO_URL" != "$NEW_REPO_URL" ]]; then
-  sed_in_place "s|repoURL:.*|repoURL: $NEW_REPO_URL|" "$ARGOCD_APP"
-  echo "argocd/application.yaml repoURL → $NEW_REPO_URL"
-
-  if ! git diff --quiet -- "$ARGOCD_APP"; then
-    git add "$ARGOCD_APP"
-    git commit -m "chore(argocd): set repoURL to $OWNER_REPO" >/dev/null
-    BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    echo "origin/$BRANCH 로 push 시도..."
-    if git push origin "$BRANCH"; then
-      echo "  push 완료"
-    else
-      echo "  WARN: push 실패 (권한/네트워크). 이 커밋을 수동으로 push 하세요:"
-      echo "        git push origin $BRANCH"
-    fi
-  fi
-else
-  echo "argocd repoURL 이미 일치 — skip"
-fi
-
-# ── 6. DB 비밀번호 입력 → .env.local ──
+# ── 5. DB 비밀번호 입력 → .env.local ──
 ENV_FILE=".env.local"
 echo ""
 echo "─── RDS 마스터 비밀번호 ────────────────────"
-if [[ -f "$ENV_FILE" ]] && grep -q '^DB_PASSWORD=' "$ENV_FILE"; then
+# 실제 파일 내용은 `export DB_PASSWORD=...` 로 시작하므로 `^DB_PASSWORD=` 만
+# 보면 매번 매칭 실패 → 매번 재프롬프트 됨 → 팀원이 "왜 또 물어봐?" 하다가
+# Ctrl+C/Enter 로 .env.local 깨뜨림 → setup-all.sh 가 빈 DB_PASSWORD 로 실패.
+if [[ -f "$ENV_FILE" ]] && grep -qE '^(export[[:space:]]+)?DB_PASSWORD=' "$ENV_FILE"; then
   echo "$ENV_FILE 이미 존재 — 그대로 사용 (새로 받으려면 파일 삭제 후 재실행)"
 else
   echo "규칙: 8자 이상, 대/소문자+숫자+특수문자 조합 권장"
@@ -120,7 +105,7 @@ EOF
   unset DB_PW DB_PW2
 fi
 
-# ── 7. GitHub Secrets 자동 등록 ──
+# ── 6. GitHub Secrets 자동 등록 ──
 echo ""
 echo "─── GitHub Secrets 등록 ──────────────────"
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then

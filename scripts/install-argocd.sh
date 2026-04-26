@@ -20,6 +20,8 @@ helm repo update >/dev/null
 VALUES="$(mktemp)"
 trap 'rm -f "$VALUES"' EXIT
 cat >"$VALUES" <<'EOF'
+global:
+  priorityClassName: ticketing-priority-platform
 configs:
   params:
     server.insecure: true
@@ -39,15 +41,39 @@ configs:
 server:
   service:
     type: ClusterIP
+  # Burstable 상위: limits 까지 두어 안정 QoS 확보. 단일 replica 라 PDB 무의미.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 controller:
+  # Burstable 상위: 기존 requests 유지, limits 추가.
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 repoServer:
   resources:
     requests:
       cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+# argocd-redis: 현재 BestEffort(resources 없음) → 1순위 eviction 대상. Burstable 로 승격.
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
       memory: 128Mi
 applicationSet:
   enabled: false
@@ -76,13 +102,17 @@ echo "argocd-server rollout 대기..."
 kubectl rollout status deployment/argocd-server -n "$NAMESPACE" --timeout=300s
 
 # ── ticketing Application 등록 ────────────────────────────────────
-APP_MANIFEST="$ROOT/argocd/application.yaml"
-if [[ -f "$APP_MANIFEST" ]]; then
-  echo "Application 등록: $APP_MANIFEST"
-  kubectl apply -f "$APP_MANIFEST"
-else
-  echo "WARN: $APP_MANIFEST 없음 — Application 등록 생략" >&2
+# application.rendered.yaml 은 terraform/argocd.tf 의 local_file 이 생성.
+# terraform apply 가 선행돼야 존재한다. git 에 커밋되지 않으므로 fork 한 팀원마다
+# 본인 github_repo 기준으로 새로 렌더된 파일이 각 로컬에 떨어진다.
+APP_MANIFEST="$ROOT/argocd/application.rendered.yaml"
+if [[ ! -f "$APP_MANIFEST" ]]; then
+  echo "ERROR: $APP_MANIFEST 없음." >&2
+  echo "       terraform apply 가 먼저 실행돼야 렌더된다 (terraform/argocd.tf)." >&2
+  exit 1
 fi
+echo "Application 등록: $APP_MANIFEST"
+kubectl apply -f "$APP_MANIFEST"
 
 # ── ArgoCD UI 외부 노출 Ingress (internet-facing ALB) ─────────────
 INGRESS_MANIFEST="$ROOT/argocd/argocd-ingress.yaml"

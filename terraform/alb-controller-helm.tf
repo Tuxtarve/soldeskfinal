@@ -19,6 +19,8 @@ resource "null_resource" "install_aws_load_balancer_controller" {
       AWS_REGION   = self.triggers.region
       VPC_ID       = self.triggers.vpc_id
       ROLE_ARN     = self.triggers.role_arn
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
 
     # HGFS/Windows line endings can introduce CRLF; strip CRs at runtime.

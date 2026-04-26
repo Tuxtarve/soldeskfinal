@@ -121,6 +121,26 @@ metadata:
     eks.amazonaws.com/role-arn: "$_sa_role_arn"
 EOF
 
+# db-backup-sa: hourly mysqldump → S3 assets bucket. role arn 도 배포자별로 다르므로 동일 패턴.
+echo "=== apply db-backup-sa (IRSA annotation 주입) ==="
+_db_backup_role_arn="${DB_BACKUP_ROLE_ARN:-}"
+if [ -z "$_db_backup_role_arn" ] && [ -n "${AWS_ACCOUNT_ID:-}" ]; then
+  _db_backup_role_arn="arn:aws:iam::${AWS_ACCOUNT_ID}:role/ticketing-eks-db-backup-role"
+fi
+if [ -n "$_db_backup_role_arn" ]; then
+  kubectl -n "$NS" apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: db-backup-sa
+  namespace: $NS
+  annotations:
+    eks.amazonaws.com/role-arn: "$_db_backup_role_arn"
+EOF
+else
+  echo "WARN: DB_BACKUP_ROLE_ARN 미주입 — db-backup CronJob 의 S3 PutObject 가 실패할 것" >&2
+fi
+
 echo "=== kubectl apply -k (rendered) ==="
 
 # parent apply 가 주입한 env 우선 (Windows state lock 회피). 없으면 terraform output fallback.
@@ -158,6 +178,14 @@ kubectl -n "$NS" set image deploy/"$WORKER" "worker-svc=${WORKER_IMAGE}" >/dev/n
 kubectl -n "$NS" set image deploy/"${WORKER}-burst" "worker-svc=${WORKER_IMAGE}" >/dev/null 2>&1 || true
 
 kubectl -n "$NS" annotate sa sqs-access-sa "eks.amazonaws.com/role-arn=${SQS_ROLE_ARN}" --overwrite >/dev/null 2>&1 || true
+if [ -n "${_db_backup_role_arn:-}" ]; then
+  kubectl -n "$NS" annotate sa db-backup-sa "eks.amazonaws.com/role-arn=${_db_backup_role_arn}" --overwrite >/dev/null 2>&1 || true
+fi
+
+# CronJob 의 S3 버킷 이름을 env 로 patch — 같은 manifest 가 어떤 AWS 계정에서도 동작하도록.
+if [ -n "${DB_BACKUP_S3_BUCKET:-}" ] && kubectl -n "$NS" get cronjob db-backup >/dev/null 2>&1; then
+  kubectl -n "$NS" set env cronjob/db-backup S3_BUCKET="$DB_BACKUP_S3_BUCKET" >/dev/null 2>&1 || true
+fi
 
 # KEDA operator 는 terraform helm_release 로 설치됨. 여기서는 CRD 준비 후 k8s/keda 만 적용(paused ScaledObject). INSTALL_KEDA=0 이면 생략.
 if [[ "${INSTALL_KEDA:-1}" != "0" ]]; then

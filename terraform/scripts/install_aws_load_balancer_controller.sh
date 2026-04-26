@@ -41,7 +41,11 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --set replicaCount=1 \
   --set serviceAccount.create=true \
   --set serviceAccount.name=aws-load-balancer-controller \
-  --set "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${ROLE_ARN}"
+  --set "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${ROLE_ARN}" \
+  --set "resources.requests.cpu=100m" \
+  --set "resources.requests.memory=200Mi" \
+  --set "resources.limits.cpu=100m" \
+  --set "resources.limits.memory=200Mi"
 
 # helm_release 완료 ≠ Controller Pod/Webhook Ready.
 # 후속 helm_release(예: KEDA) 가 Service 를 만들면 ALB Controller 의 mutating

@@ -10,13 +10,6 @@ USE ticketing;
 -- 1) 영화(1~10) + 더미(11~40) 복구
 -- =====================================================================
 
-INSERT INTO users (user_id, phone, password_hash, name, created_at)
-VALUES (1, '01012341234', '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4', '홍길동', NOW())
-ON DUPLICATE KEY UPDATE
-  phone = VALUES(phone),
-  password_hash = VALUES(password_hash),
-  name = VALUES(name);
-
 -- 더미 유저 2 ~ 50001 (총 5만명)
 -- - MySQL 5.7 호환: 루프 기반
 -- - 재실행 안전: ON DUPLICATE KEY UPDATE
@@ -26,18 +19,20 @@ CREATE PROCEDURE seed_dummy_users_2_50001()
 BEGIN
   DECLARE i INT DEFAULT 2;
   WHILE i <= 50001 DO
-    INSERT INTO users (user_id, phone, password_hash, name, created_at)
+    INSERT INTO users (user_id, phone, password_hash, name, cognito_sub, created_at)
     VALUES (
       i,
       CONCAT('010', LPAD(i, 8, '0')),
       '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4',
       CONCAT('더미유저', i),
+      CONCAT('loadtest-', i),
       NOW()
     )
     ON DUPLICATE KEY UPDATE
       phone = VALUES(phone),
       password_hash = VALUES(password_hash),
-      name = VALUES(name);
+      name = VALUES(name),
+      cognito_sub = VALUES(cognito_sub);
     SET i = i + 1;
   END WHILE;
 END$$

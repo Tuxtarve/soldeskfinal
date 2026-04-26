@@ -23,12 +23,13 @@ resources:
   - worker-svc/deployment-burst.yaml
   - worker-svc/service.yaml
   - ingress.yaml
+  - backup/cronjob.yaml
   - keda
   - kube-system
 
 images:
   - name: ticketing/ticketing-was
-    # setup-all.sh [9.5/14] 가 734772058616 를 본인 AWS 계정 ID 로 치환 후 git push.
+    # setup-all.sh [9.5/14] 가 PLACEHOLDER_ACCOUNT_ID 를 본인 AWS 계정 ID 로 치환 후 git push.
     newName: 032098305878.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ticketing-was
     newTag: latest
   - name: ticketing/worker-svc

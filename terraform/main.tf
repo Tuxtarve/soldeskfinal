@@ -24,6 +24,10 @@ terraform {
       source  = "hashicorp/external"
       version = "~> 2.3"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
   }
   required_version = ">= 1.5.0"
 }
@@ -114,28 +118,37 @@ resource "null_resource" "db_schema_init" {
       K8S_NAMESPACE    = var.ticketing_namespace
       EKS_CLUSTER_NAME = module.eks.cluster_name
       AWS_REGION       = var.aws_region
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.root}/scripts/init_db_schema_via_k8s.sh\" | bash"
   }
 }
 
 module "eks" {
-  source            = "./modules/eks"
-  env               = var.env
-  aws_region        = var.aws_region
-  vpc_id            = module.network.vpc_id
-  subnet_ids        = module.network.public_subnet_ids
+  source     = "./modules/eks"
+  env        = var.env
+  aws_region = var.aws_region
+  vpc_id     = module.network.vpc_id
+  # 노드/ELB 용 서브넷(10.0.0.0/16 내 public).
+  subnet_ids = module.network.public_subnet_ids
+  # 파드 전용 서브넷(secondary CIDR 100.64.0.0/16 내). ENIConfig 생성에만 쓰인다.
+  # 노드그룹/EKS 클러스터에는 넘기지 않음 — custom networking 의 전제.
+  pod_subnet_ids    = module.network.pod_subnet_ids
+  pod_subnet_azs    = module.network.pod_subnet_azs
   security_group_id = module.network.eks_sg_id
   cluster_name      = var.eks_cluster_name
   sqs_queue_arns = [
     module.sqs.reservation_queue_arn,
     module.sqs.reservation_dlq_arn,
   ]
-  app_node_instance_types = var.eks_app_node_instance_types
-  app_node_desired_size   = var.eks_app_node_desired_size
-  app_node_min_size       = var.eks_app_node_min_size
-  app_node_max_size       = var.eks_app_node_max_size
-  depends_on              = [module.network]
+  assets_bucket_arn          = module.s3.assets_bucket_arn
+  enable_db_backup_to_assets = true
+  app_node_instance_types    = var.eks_app_node_instance_types
+  app_node_desired_size      = var.eks_app_node_desired_size
+  app_node_min_size          = var.eks_app_node_min_size
+  app_node_max_size          = var.eks_app_node_max_size
+  depends_on                 = [module.network]
 }
 
 module "ai_advisor" {

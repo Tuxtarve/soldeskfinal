@@ -8,6 +8,11 @@
 #   2) 이 스크립트의 백그라운드 정리 루프 — terraform destroy 실행 중 주기적으로 고아 리소스 제거
 set -uo pipefail
 
+# AWS CLI v2 기본 pager(less/more) 비활성화. 이 스크립트는 SG/ENI/ELB describe·delete
+# 호출이 많아 pager 가 한 번이라도 뜨면 destroy 흐름 전체가 멈춘다. 자식 프로세스에
+# 상속되도록 export.
+export AWS_PAGER=""
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/terraform"
 

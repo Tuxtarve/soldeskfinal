@@ -84,3 +84,14 @@ value: 270000
 preemptionPolicy: Never
 globalDefault: false
 description: "devtools 보호(선점 없음) — tools-once 등"
+---
+# 플랫폼(모니터링/ArgoCD) — 앱 stable 보다도 위에 두고, preemption 가능.
+# burst 파드(9k~185k)가 노드 선점한 상태에서 plaform 파드가 재스케줄될 때
+# 밀려서 Pending 되던 문제를 방지. priorityClassName 을 Helm values 에 주입.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ticketing-priority-platform
+value: 300000
+globalDefault: false
+description: "플랫폼(monitoring/ArgoCD) — 앱 위, burst 선점 가능"

@@ -79,17 +79,25 @@ def _is_public_path(path: str) -> bool:
 def _resolve_user_id(cognito_sub: str, email: str, name: str) -> Optional[int]:
     """
     cognito_sub로 users 테이블에서 user_id 조회.
-    없으면 INSERT 후 다시 SELECT.
+    없으면 INSERT 후 다시 SELECT. 있는데 email 이 비어있으면 1회만 Cognito claim 으로 채움.
     """
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT user_id FROM users WHERE cognito_sub = %s",
+                "SELECT user_id, email FROM users WHERE cognito_sub = %s",
                 (cognito_sub,),
             )
             row = cur.fetchone()
             if row:
+                # 기존 행의 email 이 비어있고 Cognito claim 에 email 이 있으면 1회 채움.
+                # DB name 은 사용자가 edit 폼으로 변경하는 master 라 덮어쓰지 않음.
+                if email and not (row.get("email") or "").strip():
+                    cur.execute(
+                        "UPDATE users SET email = %s WHERE user_id = %s AND (email IS NULL OR email = '')",
+                        (email, int(row["user_id"])),
+                    )
+                    conn.commit()
                 return int(row["user_id"])
 
             # 신규 사용자: INSERT IGNORE (race condition 대비)

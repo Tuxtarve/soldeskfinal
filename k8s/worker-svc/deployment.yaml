@@ -39,10 +39,11 @@ spec:
               value: "2"
             - name: WORKER_DB_MAX_CONCURRENT
               value: "40"
+          # Burstable 상위: requests 를 burst(128Mi/100m)보다 상향. eviction 랭킹에서 burst 가 먼저 희생.
           resources:
             requests:
-              memory: "128Mi"
-              cpu: "100m"
+              memory: "200Mi"
+              cpu: "200m"
             limits:
               memory: "256Mi"
               cpu: "300m"

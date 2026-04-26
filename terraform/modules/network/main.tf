@@ -87,6 +87,67 @@ resource "aws_route_table_association" "private_db" {
   route_table_id = aws_route_table.private_db.id
 }
 
+# ── Pod 전용 Secondary CIDR (EKS VPC Custom Networking) ────────────────────
+#
+# Why:
+# - /24 public 서브넷 4개(이미 2→4 확장됨)에 "노드 primary IP"와 "파드 IP"가
+#   섞여서 소비됨. ENABLE_PREFIX_DELEGATION=true 환경에서는 파드마다 /28(16개)
+#   prefix 를 잡기 때문에 노드 몇 대만 떠도 Available IPv4 가 폭발적으로 줄어
+#   aws-cni 가 `InsufficientCidrBlocks` / "not enough free IPv4 or prefixes"
+#   를 뱉고 파드가 ContainerCreating 에서 무한 대기.
+#
+# Strategy (VPC Custom Networking):
+# - VPC 에 RFC6598 CGNAT 대역(100.64.0.0/16) secondary CIDR 추가.
+# - 파드 ENI(=노드의 secondary ENI)는 이 대역에서 IP 를 받음.
+# - 노드 primary ENI 는 기존 10.0.x.x 유지 → 노드 subnet 의 IP 소모는
+#   사실상 "노드 대수" 만큼만 됨 → 고갈 구조적으로 차단.
+# - 정작 IP 가 빨리 닳는 파드 쪽은 /16(65k) 대역을 통째로 차지 → 사실상 무제한.
+#
+# Route policy:
+# - pod subnet 은 map_public_ip_on_launch = false (파드 직노출 금지).
+# - 외부 egress 는 AWS_VPC_K8S_CNI_EXTERNALSNAT=false (기본값) 로 노드
+#   primary ENI(public) 경유 SNAT → pod subnet 의 RT 는 VPC local 만 있어도 충분.
+#   단, 코드 간결성 위해 기존 public RT 를 재사용(IGW 경로가 있어도 pod ENI 에
+#   public IP 가 없으므로 실제 직접 노출은 일어나지 않음).
+#
+# Why 100.64.0.0/16 (CGNAT / RFC 6598):
+# - 10.x / 172.16.x / 192.168.x 같은 흔한 사설 대역과 충돌 확률이 낮음.
+# - AWS 공식 EKS custom networking 가이드의 표준 예시 대역.
+# - 본 레포는 VPC 피어링/VPN/온프레미스 연동이 없어 외부 충돌 가능성 0.
+#
+# Tagging 주의:
+# - kubernetes.io/cluster/<name> / kubernetes.io/role/* 태그를 의도적으로 붙이지 않음.
+#   (이 태그가 붙으면 ALB 컨트롤러가 서브넷 자동 탐색 때 pod subnet 에도
+#   리스너/ENI 붙이려다 실패. 노드 subnet 에만 태그 유지.)
+
+resource "aws_vpc_ipv4_cidr_block_association" "pod" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "100.64.0.0/16"
+}
+
+resource "aws_subnet" "pod" {
+  count = 2
+  # /18 = 16,384 IP. prefix delegation 의 /28 기준 최대 1,024개 prefix 할당 가능.
+  # (노드당 수백 파드 × AZ 노드 수) 시나리오를 넉넉히 덮음.
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "100.64.${count.index * 64}.0/18"
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = false
+  depends_on              = [aws_vpc_ipv4_cidr_block_association.pod]
+
+  tags = {
+    Name        = "Pod_Subnet_${count.index + 1}_AZ${count.index + 1}"
+    Environment = var.env
+    Tier        = "pods"
+  }
+}
+
+resource "aws_route_table_association" "pod" {
+  count          = 2
+  subnet_id      = aws_subnet.pod[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
 # Web_SG: 퍼블릭 웹·모니터링 (80, 443, 22, icmp)
 resource "aws_security_group" "web" {
   name        = "prod-monitoring-sg"
@@ -310,6 +371,8 @@ resource "null_resource" "cleanup_vpc_leftovers_before_destroy" {
     environment = {
       NET_VPC_ID = self.triggers.vpc_id
       NET_REGION = self.triggers.region
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = "tr -d '\\r' < \"${path.module}/scripts/cleanup_vpc_leftovers_before_destroy.sh\" | bash"
   }

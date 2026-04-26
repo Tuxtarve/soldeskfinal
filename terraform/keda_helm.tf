@@ -33,6 +33,8 @@ resource "null_resource" "apply_ticketing_priority_classes" {
       CLUSTER_NAME = module.eks.cluster_name
       AWS_REGION   = var.aws_region
       PC_FILE      = abspath("${path.root}/../k8s/priorityclass-ticketing.yaml")
+      # AWS CLI v2 기본 pager 비활성화 — TTY 환경(Git Bash)에서 "(END)" 로 멈춤 방지.
+      AWS_PAGER = ""
     }
     command = <<-EOT
 set -euo pipefail
@@ -60,6 +62,8 @@ resource "helm_release" "keda" {
   atomic          = true
   cleanup_on_fail = true
 
+  # QoS: 3개 Deployment(operator / metrics-apiserver / admission-webhooks) 모두 requests=limits 로 Guaranteed.
+  # KEDA가 죽으면 worker-svc-burst 스케일링 자체 멈춰 대량 큐 적체 — 노드 메모리 압박 시 최후까지 살아남아야 함.
   values = [
     yamlencode({
       priorityClassName = "system-cluster-critical"
@@ -67,6 +71,22 @@ resource "helm_release" "keda" {
         create      = true
         name        = "keda-operator"
         annotations = { "eks.amazonaws.com/role-arn" = module.eks.keda_operator_role_arn }
+      }
+      resources = {
+        requests = { cpu = "200m", memory = "300Mi" }
+        limits   = { cpu = "200m", memory = "300Mi" }
+      }
+      metricsServer = {
+        resources = {
+          requests = { cpu = "100m", memory = "150Mi" }
+          limits   = { cpu = "100m", memory = "150Mi" }
+        }
+      }
+      webhooks = {
+        resources = {
+          requests = { cpu = "50m", memory = "100Mi" }
+          limits   = { cpu = "50m", memory = "100Mi" }
+        }
       }
     })
   ]
@@ -105,6 +125,8 @@ resource "null_resource" "keda_cleanup_on_destroy" {
       AWS_REGION        = self.triggers.aws_region
       KEDA_NAMESPACE    = "keda"
       KEDA_RELEASE_NAME = "keda"
+      # AWS CLI v2 기본 pager 비활성화 — destroy 중 멈춤 방지.
+      AWS_PAGER = ""
       # destroy가 길어지지 않게 빠르게 정리(필요 시 finalizer 조기 제거)
       KEDA_CLEANUP_WAIT_SEC = "120"
       # 1이면 namespace finalizers 강제 제거(최후 수단). 기본 0.
