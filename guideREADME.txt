@@ -121,13 +121,10 @@ gh 없으면 prepare.sh 가 수동 설치 방법을 안내합니다.
 이 프로젝트의 배포 스크립트(setup-all.sh, setup-gcp.sh)는 bash 기반입니다.
 OS에 따라 아래 내용을 반드시 확인하세요.
 
-┌─────────────────────────────────────────────────────────┐
-│ OS              │ 배포 방법         │ kubectl 아키텍처  │
-│─────────────────┼───────────────────┼───────────────────│
-│ Mac (M1/M2/M3)  │ 터미널 직접 실행  │ ARM64  ← 주의!   │
-│ Mac (Intel)     │ 터미널 직접 실행  │ AMD64 (기본)      │
+│ OS              │ 배포 방법         │ kubectl 아키텍처 │
+│─────────────────┼─────────────────┼────────────────│ 
+│ Mac (M1/M2/M3)  │ 터미널 직접 실행    │ ARM64  ← 주의!  │
 │ Windows         │ WSL2(Ubuntu) 필수 │ AMD64 (WSL2 기준) │
-└─────────────────────────────────────────────────────────┘
 
 ▶ Windows — WSL2 필수 설치
   PowerShell에서 bash 스크립트를 직접 실행할 수 없습니다.
@@ -142,11 +139,6 @@ OS에 따라 아래 내용을 반드시 확인하세요.
        chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
        kubectl version --client       # 버전 나오면 OK
 
-  3) WSL2 안에서 AWS CLI, Terraform, Docker 등 나머지 도구 설치
-     → [0-A] Ubuntu / WSL / Linux 항목 참고
-
-  4) Docker Desktop for Windows 설치 후
-     Settings → Resources → WSL Integration → Ubuntu 활성화
 
 ▶ Mac Apple Silicon (M1/M2/M3) — kubectl ARM64 버전 필수
   Homebrew로 설치하면 자동으로 ARM64 버전이 설치됩니다.
@@ -162,8 +154,8 @@ OS에 따라 아래 내용을 반드시 확인하세요.
        chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
        kubectl version --client       # 버전 나오면 OK
 
-▶ Mac Intel — 별도 조치 불필요
-  [0-A] macOS(Homebrew) 항목 그대로 진행하면 됩니다.
+▶ Windows 시간 ↔ WSL 시간 동기화
+sudo apt install ntpdate -y
 
 ==========================================================
  1. Fork & Clone
@@ -275,100 +267,70 @@ OS에 따라 아래 내용을 반드시 확인하세요.
   (기본 배포에는 불필요 — setup-all.sh 가 이미지 push 까지 전부 수행)
 
 
+
 ==========================================================
  GCP AI Advisor 가이드 (AWS 배포 완료 후 진행)
 ==========================================================
 
 [이 가이드가 하는 일]
-EKS 클러스터의 실시간 메트릭을 수집해 Gemini AI 에게 분석을 맡기고,
-오토스케일 추천 결과를 GCP Cloud Logging 에 저장 + Slack 으로 알림.
-AWS 인프라는 전혀 건드리지 않습니다.
+EKS 메트릭을 10분마다 자동 수집해 Gemini AI 가 오토스케일 추천을 생성하고
+GCP Cloud Logging 에 저장 + Slack 알림까지 자동으로 돌아갑니다.
+setup-gcp.sh 한 번 실행하면 이후 수동 조작 없이 자동 운영됩니다.
 
-[전체 흐름]
-  collect_metrics.sh  →  recommend_scaling.py  →  recommendation_to_patches.py
-                                                →  push_to_cloud_logging.py
-                                                →  notify.py (Slack)
-
-[결과물]
-  - scripts/data/metrics-<ts>.json          EKS/SQS 스냅샷
-  - scripts/data/recommendation-<ts>.json   Gemini 추천 JSON
-  - scripts/data/patches-<ts>/              Kustomize 패치 YAML (바로 적용 가능)
-  - GCP Logs Explorer                       추천 이력 영구 보관
-  - Slack (선택)                            priority:now 항목 즉시 알림
+[전체 흐름 — 명령 3줄이면 끝]
+  1. 사전 준비 (한 번만)          ← G-0
+  2. source .env.local
+     bash scripts/setup-gcp.sh   ← G-1 (한 방 배포)
+  3. 이후 자동 실행 (10분마다 CronJob)
 
 
 ==========================================================
- G-0. 사전 준비물 (한 번만)
+ G-0. 사전 준비 (한 번만 — 이미 했으면 건너뛰기)
 ==========================================================
 
 ──────────────────────────────────────────────────────────
-[G-0-A] gcloud CLI 설치
+[G-0-1] gcloud CLI 설치
 ──────────────────────────────────────────────────────────
-■ macOS (Homebrew)
-    brew install --cask google-cloud-sdk
-
-■ Windows (PowerShell 관리자 권한)
-    winget install -e --id Google.CloudSDK
-  → 설치 후 PowerShell 재시작.
-
-■ Ubuntu / WSL / Linux
+■ Windows (WSL2 Ubuntu 터미널) / Linux
     curl https://sdk.cloud.google.com | bash
     exec -l $SHELL
+
+■ Mac → MacREADME.txt 참고
 
 확인:
     gcloud --version          # 버전 나오면 OK
 
 ──────────────────────────────────────────────────────────
-[G-0-B] Python 패키지 설치
+[G-0-2] GCP 로그인 (브라우저 필요 — 한 번만)
 ──────────────────────────────────────────────────────────
-  pip install -r scripts/requirements.txt --break-system-packages
-
-  (가상환경 사용 시 --break-system-packages 생략)
-
-■ Windows (PowerShell 또는 Git Bash)
-  pip install -r scripts/requirements.txt
-
-확인:
-    python3 -c "from google import genai; from google.cloud import logging; print('OK')"
-
-──────────────────────────────────────────────────────────
-[G-0-C] GCP 인증 — ADC (서비스 계정 키 불필요)
-──────────────────────────────────────────────────────────
-서비스 계정 키 대신 Application Default Credentials(ADC) 방식 사용.
-gcloud auth application-default login 한 번으로 Python SDK 가 자동 인증됨.
-
     gcloud auth login
     gcloud config set project soldesk-gcp
-    gcloud auth application-default login   ← 이것이 핵심 (SDK 인증용)
+    gcloud auth application-default login \
+      --scopes="https://www.googleapis.com/auth/cloud-platform"
 
-  → 브라우저에서 구글 로그인 → 자격증명이 로컬에 자동 저장됨
-  → Windows: %APPDATA%\gcloud\application_default_credentials.json
-  → macOS/Linux: ~/.config/gcloud/application_default_credentials.json
+  → 브라우저에서 구글 계정 로그인 → 허용 클릭
+  → 이후 setup-gcp.sh 실행 시 자동 사용됨
 
 확인:
-    python3 -c "from google.cloud import logging; logging.Client(project='soldesk-gcp'); print('ADC OK')"
+    gcloud config get-value project      # soldesk-gcp 나오면 OK
 
 ──────────────────────────────────────────────────────────
-[G-0-D] .env.local 생성 (git 에 올라가지 않음)
+[G-0-3] .env.local 생성 (git 에 올라가지 않음)
 ──────────────────────────────────────────────────────────
-프로젝트 루트(soldeskfinal/)에 .env.local 파일을 아래 명령어로 생성합니다.
-이 파일은 .gitignore 로 제외되어 git 에 절대 올라가지 않습니다.
+Gemini API 키 발급: https://aistudio.google.com → "Get API key"
 
-■ Windows (WSL2) / Linux — 터미널에서 실행:
+■ Windows (WSL2) / Linux:
     cat > .env.local << 'EOF'
     export DB_PASSWORD='본인_DB_비밀번호'
     export TF_VAR_db_password='본인_DB_비밀번호'
     export GEMINI_API_KEY=발급받은_키_입력
     export GEMINI_MODEL=gemini-2.5-flash-lite
     export AWS_REGION=ap-northeast-2
-    # Slack 알림 쓰려면 주석 해제 후 URL 입력
     # export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
     EOF
 
-  ※ DB_PASSWORD 는 prepare.sh 실행 시 입력한 값과 동일하게 입력
-
-Gemini API 키 발급:
-  https://aistudio.google.com → "Get API key" → 키 복사
+  ※ DB_PASSWORD 는 prepare.sh 실행 시 입력한 값과 동일
+  ※ gemini-1.5-flash / gemini-2.0-flash 는 지원 종료 — 사용 불가
 
 연결 확인:
     source .env.local && python3 scripts/gemini_ping.py
@@ -376,225 +338,106 @@ Gemini API 키 발급:
 
 
 ==========================================================
- G-1. GCP 로그인 및 프로젝트 설정
+ G-1. GCP 한 방 배포
 ==========================================================
 
-    gcloud auth login
-    gcloud config set project soldesk-gcp
+    source .env.local
+    bash scripts/setup-gcp.sh
 
-확인:
-    gcloud config get-value project      # soldesk-gcp 나오면 OK
-    gcloud logging logs list             # 로그 목록 조회 되면 OK
+[자동 처리 항목 — 수동 개입 없음]
+  [1]  사전 요건 확인 (gcloud / python3 / docker / kubectl)
+  [2]  Python 패키지 자동 설치
+  [3]  Workload Identity Federation 구성 (서비스 계정 키 없음)
+       - WIF Pool / AWS Provider / GCP Service Account 자동 생성
+       - IRSA 역할 + EKS 노드 역할 WIF 바인딩 자동 설정
+  [4]  terraform apply — IRSA 역할 + ECR 리포지터리 생성
+  [5]  GCP Credential Config 생성 → K8s ConfigMap 적용
+       (IMDSv2 활성화, EKS 노드 hop limit 자동 설정)
+  [6]  ServiceAccount IRSA ARN 자동 주입
+  [7]  Docker 이미지 빌드 → ECR push
+       (ARM64/AMD64 자동 감지 후 분기)
+  [8]  RBAC ClusterRole 생성 (K8s 리소스 읽기 권한)
+  [9]  K8s Secret + CronJob 배포
+  [10] 즉시 실행 테스트
 
-※ setup-all.sh 실행 중 기다리는 동안 미리 해두면 시간 절약됩니다.
+[완료 후 자동으로 돌아가는 것들 (수동 실행 불필요)]
+  EKS CronJob 이 10분마다:
+    AWS 메트릭 수집 → GCP Cloud Logging 저장 (eks-metrics)
+    → Gemini 오토스케일 추천 → GCP Cloud Logging 저장 (gemini-recommendations)
+    → Slack 알림 (SLACK_WEBHOOK_URL 설정 시)
+
+[로그 / 결과 확인]
+  kubectl logs -n ticketing -l job-name=ai-advisor-test -f
+
+  GCP Logs Explorer (브라우저):
+    logName="projects/soldesk-gcp/logs/eks-metrics"
+    logName="projects/soldesk-gcp/logs/gemini-recommendations"
 
 
 ==========================================================
- G-2. AI Advisor 파이프라인 실행
+ G-2. 선택 — 수동 실행 / 패치 적용 / 임계값 탐색
 ==========================================================
-※ EKS 클러스터가 Running 상태여야 합니다 (setup-all.sh 완료 후).
+※ CronJob 이 자동 실행되므로 평시에는 불필요.
+  디버깅·즉시 분석·부하 테스트 시만 사용.
 
 ──────────────────────────────────────────────────────────
-[G-2-1] 메트릭 수집
+[G-2-1] 파이프라인 즉시 실행 (한 방)
 ──────────────────────────────────────────────────────────
-■ Windows (WSL2) / Linux
-    source .env.local
-    python3 scripts/collect_metrics.py
-
-  ※ AWS_REGION 이 .env.local 에 없으면 오류 발생 — [G-0-D] 에서 설정 확인
-
-  → scripts/data/metrics-<타임스탬프>.json 생성
-  → EKS 노드·Pod·HPA·KEDA·SQS + Prometheus 트렌드 + CloudWatch RDS/Redis
-  → AWS → 로컬 → GCP 흐름: kubectl/boto3 로 AWS 수집 후 SDK 로 GCP 전송
-
-──────────────────────────────────────────────────────────
-[G-2-2] Gemini 추천 받기
-──────────────────────────────────────────────────────────
-    source .env.local
-    python3 scripts/recommend_scaling.py
-
-  → Gemini 2.5 Flash Lite 가 메트릭을 분석해 스케일링 추천 생성
-  → scripts/data/recommendation-<타임스탬프>.json 저장
-  → 터미널에 우선순위별 요약 표 출력 (NOW / WATCH / LATER)
-
-  ※ 사용 모델: gemini-2.5-flash-lite (무료 티어 기준, .env.local 에서 변경 가능)
-     gemini-1.5-flash / gemini-2.0-flash 는 지원 종료 — 사용 불가
-
-──────────────────────────────────────────────────────────
-[G-2-3] Kustomize 패치 파일 생성 및 적용
-──────────────────────────────────────────────────────────
-    source .env.local
-    python3 scripts/recommendation_to_patches.py
-
-  → scripts/data/patches-<타임스탬프>/ 디렉터리 생성
-  → HPA·Deployment·KEDA 등 Kubernetes 리소스별 YAML 파일 자동 생성
-  → manual-actions.md : YAML 로 표현 불가능한 항목(RDS, Redis 등) 수동 조치 목록
-  → README.md         : 전체 요약 + 적용 순서 안내
-
-생성 결과 확인:
-    ls scripts/data/patches-<ts>/
-    cat scripts/data/patches-<ts>/README.md
-
-──────────────────────────────────────────────────────────
-패치 적용 순서 (파일 하나씩 검토 후 적용)
-──────────────────────────────────────────────────────────
-
-STEP 1 — 서버 검증 (API 서버가 실제로 수락하는지 확인)
-    kubectl apply -n ticketing --dry-run=server \
-      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
-    kubectl apply -n ticketing --dry-run=server \
-      -f scripts/data/patches-<ts>/01-hpa-write-api-hpa.yaml
-  → 오류 없으면 다음 단계 진행
-
-STEP 2 — diff 확인 ⭐ 강추 (현재 클러스터 값과 변경 후 값 비교)
-    kubectl diff -n ticketing \
-      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
-    kubectl diff -n ticketing \
-      -f scripts/data/patches-<ts>/01-hpa-write-api-hpa.yaml
-  → "-" 현재값, "+" 변경될 값 확인 후 이상 없으면 다음 단계 진행
-
-STEP 3 — 실제 적용
-    kubectl apply -n ticketing \
-      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
-    kubectl apply -n ticketing \
-      -f scripts/data/patches-<ts>/01-hpa-write-api-hpa.yaml
-
-STEP 4 — 적용 결과 확인
-    # HPA 상태 확인
-    kubectl get hpa -n ticketing
-    # Deployment replicas 확인
-    kubectl get deployment -n ticketing
-    # KEDA ScaledObject 확인 (worker 관련 패치 적용 시)
-    kubectl get scaledobject -n ticketing
-    # 변경된 리소스 상세 확인
-    kubectl describe hpa read-api-hpa -n ticketing
-
-  ※ <ts> 는 실제 생성된 타임스탬프 폴더명으로 교체하세요
-     예) patches-20260427-063737
-
-──────────────────────────────────────────────────────────
-[G-2-4] 메트릭 → GCP Cloud Logging 전송 (원본 보관)
-──────────────────────────────────────────────────────────
-    python3 scripts/push_metrics_to_cloud_logging.py
-
-  → EKS 메트릭 스냅샷(Prometheus + CloudWatch 포함)을 GCP 에 보관
-  → GCP 콘솔 → Logging → Logs Explorer 에서 조회:
-      logName="projects/soldesk-gcp/logs/eks-metrics"
-
-──────────────────────────────────────────────────────────
-[G-2-5] 추천 → GCP Cloud Logging 전송
-──────────────────────────────────────────────────────────
-    python3 scripts/push_to_cloud_logging.py
-
-  → Gemini 추천 JSON 을 GCP Cloud Logging 으로 전송
-  → GCP 콘솔 → Logging → Logs Explorer 에서 조회:
-      logName="projects/soldesk-gcp/logs/gemini-recommendations"
-
-──────────────────────────────────────────────────────────
-[G-2-6] Slack 알림 (선택 — SLACK_WEBHOOK_URL 설정 시)
-──────────────────────────────────────────────────────────
-    python3 scripts/notify.py
-
-  → priority:now 항목만 Slack 채널로 알림 전송
-  → SLACK_WEBHOOK_URL 미설정 시 stdout 출력으로 대체
-
-──────────────────────────────────────────────────────────
-[G-2-7] 한 방 실행 (전체 파이프라인)
-──────────────────────────────────────────────────────────
-■ Windows (WSL2) / Linux
     source .env.local && \
     python3 scripts/collect_metrics.py && \
-    python3 scripts/push_metrics_to_cloud_logging.py && \
     python3 scripts/recommend_scaling.py && \
     python3 scripts/recommendation_to_patches.py && \
     python3 scripts/push_to_cloud_logging.py && \
     python3 scripts/notify.py
 
-  ※ source .env.local 을 반드시 먼저 실행해야 합니다
-     (GEMINI_API_KEY, AWS_REGION, GEMINI_MODEL 등 환경변수 로드)
+──────────────────────────────────────────────────────────
+[G-2-2] Gemini 추천 패치 적용 순서
+──────────────────────────────────────────────────────────
+STEP 1 — 서버 검증
+    kubectl apply -n ticketing --dry-run=server \
+      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
 
+STEP 2 — diff 확인 ⭐ 강추
+    kubectl diff -n ticketing \
+      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+  → "-" 현재값, "+" 변경될 값 확인
 
-==========================================================
- G-3. EKS CronJob 자동 배포 (한 방)
-==========================================================
+STEP 3 — 실제 적용
+    kubectl apply -n ticketing \
+      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
 
-[이 섹션이 하는 일]
-  AWS setup-all.sh 완료 후 아래 명령 하나로 전부 자동 처리됩니다.
+STEP 4 — 결과 확인
+    kubectl get hpa -n ticketing
+    kubectl get scaledobject -n ticketing
+
+  ※ <ts> 는 실제 타임스탬프로 교체. 예) patches-20260427-063737
+
+──────────────────────────────────────────────────────────
+[G-2-3] 오토스케일링 임계값 탐색
+──────────────────────────────────────────────────────────
+Gemini 가 이분 탐색으로 장애 직전 최대 부하 임계값을 자동 탐색합니다.
+약 20분, 10회 반복 후 HPA/KEDA 권장 설정값까지 출력됩니다.
 
     source .env.local
-    bash scripts/setup-gcp.sh
 
-[사전 조건]
-  - setup-all.sh 완료 후 실행 (EKS 클러스터 Running 상태)
-  - gcloud auth login 및 application-default login 완료 ([G-0-C] 참고)
-  - .env.local 에 GEMINI_API_KEY 설정 완료 ([G-0-D] 참고)
+    # KEDA 임계값 (SQS 메시지 수 기준, worker-svc)
+    python3 scripts/find_threshold.py --mode keda
 
-[자동 처리 항목]
-  [1]  사전 요건 확인 (gcloud / python3 / docker / kubectl)
-  [2]  Python 패키지 설치
-  [3]  GCP 로그인 확인 (application-default)
-  [4]  Workload Identity Federation 구성
-       - WIF Pool / AWS Provider / GCP Service Account 생성
-       - IRSA 역할 + EKS 노드 역할 양쪽 WIF 바인딩 (자동)
-  [5]  terraform apply — IRSA 역할 + ECR 리포지터리 생성
-  [6]  GCP Credential Config 생성 → K8s ConfigMap 적용
-       - IMDSv2 활성화 (--enable-imdsv2)
-       - audience 중복 자동 수정
-       - EKS 노드 IMDS hop limit 2 설정 (Pod → IMDS 접근 허용)
-  [7]  ServiceAccount IRSA ARN 자동 주입
-  [8]  Docker 이미지 빌드 → ECR push
-       ★ CPU 아키텍처 자동 감지 후 분기:
-         AMD64(Windows WSL2 / Linux) → docker build (네이티브)
-         ARM64(Mac M1/M2/M3)        → docker buildx --platform linux/amd64
-       EKS 노드는 항상 linux/amd64 이므로 반드시 amd64 이미지 필요
-  [9]  RBAC ClusterRole 생성 (ai-advisor-sa K8s 리소스 읽기 권한)
-  [10] K8s Secret + CronJob 배포
-  [11] 즉시 실행 테스트
+    # HPA 임계값 (HTTP RPS 기준)
+    python3 scripts/find_threshold.py --mode hpa-read
+    python3 scripts/find_threshold.py --mode hpa-write
 
-[아키텍처별 Docker 빌드 명령어 (스크립트가 자동 처리, 수동 실행 시 참고)]
+    # 현재 상태만 분석 (부하 없음, 비용 0)
+    python3 scripts/find_threshold.py --mode keda --dry-run
 
-  ■ Windows (WSL2) / Linux — AMD64 네이티브
-      ECR_URL=<계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor
-      aws ecr get-login-password --region ap-northeast-2 | \
-        docker login --username AWS --password-stdin <계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com
-      docker build -t ai-advisor:latest -f services/ai-advisor/Dockerfile .
-      docker tag ai-advisor:latest ${ECR_URL}:latest
-      docker push ${ECR_URL}:latest
+  → 결과: scripts/data/threshold-<mode>-<ts>.json
 
-  ■ Mac M1/M2/M3 (Apple Silicon) — ARM64 → AMD64 크로스빌드 필수
-      ECR_URL=<계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor
-      aws ecr get-login-password --region ap-northeast-2 | \
-        docker login --username AWS --password-stdin <계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com
-      docker buildx build \
-        --platform linux/amd64 \
-        -t ${ECR_URL}:latest \
-        -f services/ai-advisor/Dockerfile \
-        --push .
-    ※ --push 옵션으로 빌드와 push 를 한 번에 실행
-    ※ docker build 로 빌드하면 ARM64 이미지가 생성되어 EKS에서 오류 발생
-
-  ■ Mac Intel — AMD64 네이티브 (Windows WSL2 / Linux 와 동일)
-
-[결과]
-  EKS CronJob 이 10분마다 자동 실행됩니다.
-    메트릭 수집(Prometheus + CloudWatch)
-      → GCP Cloud Logging (eks-metrics)
-      → Gemini 오토스케일 추천
-      → GCP Cloud Logging (gemini-recommendations)
-      → Slack 알림 (SLACK_WEBHOOK_URL 설정 시)
-
-[로그 확인]
-  kubectl logs -n ticketing -l job-name=ai-advisor-test -f
-
-  GCP Logs Explorer:
-    eks-metrics           → 수집된 EKS 메트릭 원본
-    gemini-recommendations → Gemini 추천 결과 이력
 
 ==========================================================
- G-4. 데이터 관리
+ G-3. 데이터 관리
 ==========================================================
 
-scripts/data/ 디렉터리는 .gitignore 로 제외되어 있습니다.
+scripts/data/ 는 .gitignore 로 제외되어 있습니다.
 메트릭·추천·패치 파일이 누적되므로 주기적으로 정리하세요.
 
     ls scripts/data/                     # 누적 파일 확인
