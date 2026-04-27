@@ -250,29 +250,23 @@ gcloud iam workload-identity-pools create-cred-config \
 ok "Credential Config 생성 (IMDSv2): $CRED_CONFIG"
 
 # audience 중복 제거 (gcloud 버그: //iam.googleapis.com 이 두 번 들어가는 경우)
-python3 - <<'PYEOF'
-import json, sys
-path = sys.argv[1] if len(sys.argv) > 1 else ""
-import os; path = path or os.environ.get("CRED_CONFIG","")
-with open(path) as f: d = json.load(f)
-aud = d.get("audience","")
-if aud.startswith("//iam.googleapis.com///iam.googleapis.com"):
-    d["audience"] = aud.replace("//iam.googleapis.com///iam.googleapis.com", "//iam.googleapis.com", 1)
-    with open(path,"w") as f: json.dump(d, f, indent=2)
-    print(" → audience 중복 수정 완료")
-else:
-    print(" → audience 정상")
-PYEOF
-export CRED_CONFIG
+# bash 변수를 직접 Python 문자열로 치환 — 환경변수 export 순서 문제 없음
 python3 -c "
-import json, os
-path = os.environ['CRED_CONFIG']
-with open(path) as f: d = json.load(f)
-aud = d.get('audience','')
-if aud.startswith('//iam.googleapis.com///iam.googleapis.com'):
-    d['audience'] = aud.replace('//iam.googleapis.com///iam.googleapis.com', '//iam.googleapis.com', 1)
-    with open(path,'w') as f: json.dump(d, f, indent=2)
-    print(' → audience 중복 수정 완료')
+import json
+path = '${CRED_CONFIG}'
+if not path:
+    print(' → CRED_CONFIG 경로 없음 (skip)')
+else:
+    with open(path) as f: d = json.load(f)
+    aud = d.get('audience', '')
+    if aud.startswith('//iam.googleapis.com///iam.googleapis.com'):
+        d['audience'] = aud.replace(
+            '//iam.googleapis.com///iam.googleapis.com',
+            '//iam.googleapis.com', 1)
+        with open(path, 'w') as f: json.dump(d, f, indent=2)
+        print(' → audience 중복 수정 완료')
+    else:
+        print(' → audience 정상:', aud[:60])
 "
 
 kubectl create configmap gcp-credential-config \
