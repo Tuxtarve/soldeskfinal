@@ -168,11 +168,18 @@ else
   ok "GCP Service Account 생성"
 fi
 
-# 4-4. Cloud Logging 쓰기 권한
-gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
-  --member="serviceAccount:${GCP_SA_EMAIL}" \
-  --role="roles/logging.logWriter" --quiet
-ok "Cloud Logging Writer 권한 부여"
+# 4-4. Cloud Logging 쓰기 권한 (SA 생성 직후 IAM 전파 대기)
+echo " → IAM 전파 대기 중 (최대 15초)..."
+for i in $(seq 1 5); do
+  if gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+    --member="serviceAccount:${GCP_SA_EMAIL}" \
+    --role="roles/logging.logWriter" --quiet 2>/dev/null; then
+    ok "Cloud Logging Writer 권한 부여"
+    break
+  fi
+  echo "   재시도 $i/5..."
+  sleep 3
+done
 
 # ==========================================================
 # [5] terraform apply (IRSA 역할 + ECR)
@@ -193,16 +200,41 @@ ok "IRSA 역할: $IRSA_ROLE_ARN"
 ok "ECR URL  : $ECR_URL"
 
 # ==========================================================
-# [4 continued] IRSA 역할 → GCP SA 바인딩
+# [4 continued] IRSA 역할 + 노드 역할 → GCP SA 바인딩
 # ==========================================================
+# attribute.aws_role 은 extract('assumed-role/{role}/') 결과 = role 이름만 사용
 ROLE_NAME=$(echo "$IRSA_ROLE_ARN" | awk -F'/' '{print $NF}')
-MEMBER="principalSet://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/attribute.aws_role/arn:aws:sts::${AWS_ACCOUNT}:assumed-role/${ROLE_NAME}"
+IRSA_MEMBER="principalSet://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/attribute.aws_role/${ROLE_NAME}"
 
 gcloud iam service-accounts add-iam-policy-binding "$GCP_SA_EMAIL" \
   --project="$GCP_PROJECT" \
   --role="roles/iam.workloadIdentityUser" \
-  --member="$MEMBER" --quiet
-ok "WIF 바인딩: $ROLE_NAME → $GCP_SA_EMAIL"
+  --member="$IRSA_MEMBER" --quiet
+ok "WIF 바인딩 (IRSA 역할): $ROLE_NAME → $GCP_SA_EMAIL"
+
+# EKS 노드 인스턴스 프로파일 역할도 WIF 바인딩 (IMDS 경유 인증에 필요)
+CLUSTER_NAME="${CLUSTER_NAME:-ticketing-eks}"
+NODE_ROLE_NAME=$(aws iam get-instance-profile \
+  --instance-profile-name "$(aws ec2 describe-instances \
+    --filters "Name=tag:eks:cluster-name,Values=${CLUSTER_NAME}" "Name=instance-state-name,Values=running" \
+    --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' \
+    --region "$AWS_REGION" --output text 2>/dev/null | awk -F'/' '{print $NF}')" \
+  --query 'InstanceProfile.Roles[0].RoleName' \
+  --output text 2>/dev/null || echo "")
+
+if [[ -n "$NODE_ROLE_NAME" && "$NODE_ROLE_NAME" != "None" ]]; then
+  NODE_MEMBER="principalSet://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/attribute.aws_role/${NODE_ROLE_NAME}"
+  gcloud iam service-accounts add-iam-policy-binding "$GCP_SA_EMAIL" \
+    --project="$GCP_PROJECT" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="$NODE_MEMBER" --quiet
+  gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+    --member="$NODE_MEMBER" \
+    --role="roles/logging.logWriter" --quiet
+  ok "WIF 바인딩 (노드 역할): $NODE_ROLE_NAME → $GCP_SA_EMAIL"
+else
+  echo " → 노드 역할 자동 감지 실패 — 수동으로 추가 필요 (guideREADME.txt [0-F] 참고)"
+fi
 
 # ==========================================================
 # [6] GCP Credential Config → K8s ConfigMap
@@ -213,13 +245,55 @@ gcloud iam workload-identity-pools create-cred-config \
   "//iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}" \
   --service-account="$GCP_SA_EMAIL" \
   --aws \
+  --enable-imdsv2 \
   --output-file="$CRED_CONFIG" --quiet
-ok "Credential Config 생성: $CRED_CONFIG"
+ok "Credential Config 생성 (IMDSv2): $CRED_CONFIG"
+
+# audience 중복 제거 (gcloud 버그: //iam.googleapis.com 이 두 번 들어가는 경우)
+python3 - <<'PYEOF'
+import json, sys
+path = sys.argv[1] if len(sys.argv) > 1 else ""
+import os; path = path or os.environ.get("CRED_CONFIG","")
+with open(path) as f: d = json.load(f)
+aud = d.get("audience","")
+if aud.startswith("//iam.googleapis.com///iam.googleapis.com"):
+    d["audience"] = aud.replace("//iam.googleapis.com///iam.googleapis.com", "//iam.googleapis.com", 1)
+    with open(path,"w") as f: json.dump(d, f, indent=2)
+    print(" → audience 중복 수정 완료")
+else:
+    print(" → audience 정상")
+PYEOF
+export CRED_CONFIG
+python3 -c "
+import json, os
+path = os.environ['CRED_CONFIG']
+with open(path) as f: d = json.load(f)
+aud = d.get('audience','')
+if aud.startswith('//iam.googleapis.com///iam.googleapis.com'):
+    d['audience'] = aud.replace('//iam.googleapis.com///iam.googleapis.com', '//iam.googleapis.com', 1)
+    with open(path,'w') as f: json.dump(d, f, indent=2)
+    print(' → audience 중복 수정 완료')
+"
 
 kubectl create configmap gcp-credential-config \
   --from-file=config.json="$CRED_CONFIG" \
   -n "$NS" --dry-run=client -o yaml | kubectl apply -f -
 ok "K8s ConfigMap gcp-credential-config 적용"
+
+# IMDS hop limit 2 설정 (EKS Pod → IMDS 접근 허용)
+echo " → EKS 노드 IMDS hop limit 2 설정 중..."
+aws ec2 describe-instances \
+  --filters "Name=tag:eks:cluster-name,Values=${CLUSTER_NAME:-ticketing-eks}" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].InstanceId' \
+  --region "$AWS_REGION" --output text 2>/dev/null | tr '\t' '\n' | while read -r iid; do
+    [[ -z "$iid" ]] && continue
+    aws ec2 modify-instance-metadata-options \
+      --instance-id "$iid" \
+      --http-put-response-hop-limit 2 \
+      --http-endpoint enabled \
+      --region "$AWS_REGION" --output text >/dev/null 2>&1 && printf "   hop limit 2: %s\n" "$iid"
+done
+ok "IMDS hop limit 설정 완료"
 
 # ==========================================================
 # [7] serviceaccount.yaml IRSA ARN 주입
@@ -242,16 +316,28 @@ hr; echo " [8] Docker 이미지 빌드 → ECR push"
 
 aws ecr get-login-password --region "$AWS_REGION" | \
   docker login --username AWS --password-stdin \
-  "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" --quiet 2>&1 | grep -v "^$" || true
+  "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" 2>&1 | grep -v "^$" || true
 ok "ECR 로그인 완료"
 
-docker build -t ai-advisor:latest \
-  -f "$ROOT/services/ai-advisor/Dockerfile" "$ROOT" --quiet
-ok "Docker 빌드 완료"
-
-docker tag ai-advisor:latest "${ECR_URL}:latest"
-docker push "${ECR_URL}:latest" --quiet 2>&1 | tail -3
-ok "ECR push 완료: ${ECR_URL}:latest"
+# EKS 노드는 항상 linux/amd64 — Mac M1/M2/M3(arm64)에서 실행해도 amd64로 빌드
+HOST_ARCH=$(uname -m)
+if [[ "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ]]; then
+  echo " → Apple Silicon / ARM64 감지 — buildx 로 linux/amd64 크로스 빌드"
+  docker buildx build \
+    --platform linux/amd64 \
+    -t "${ECR_URL}:latest" \
+    -f "$ROOT/services/ai-advisor/Dockerfile" \
+    --push \
+    "$ROOT"
+  ok "ECR push 완료 (amd64 크로스빌드): ${ECR_URL}:latest"
+else
+  echo " → x86_64 감지 — 네이티브 빌드"
+  docker build -t ai-advisor:latest \
+    -f "$ROOT/services/ai-advisor/Dockerfile" "$ROOT" --quiet
+  docker tag ai-advisor:latest "${ECR_URL}:latest"
+  docker push "${ECR_URL}:latest" 2>&1 | tail -3
+  ok "ECR push 완료: ${ECR_URL}:latest"
+fi
 
 # cronjob.yaml 이미지 URI 주입
 CRON_FILE="$ROOT/k8s/ai-advisor/cronjob.yaml"
@@ -286,11 +372,47 @@ if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
   ok "SLACK_WEBHOOK_URL 주입"
 fi
 
+# RBAC — ai-advisor-sa 가 클러스터 리소스를 읽을 수 있도록
+kubectl apply -f - <<'RBACEOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ai-advisor-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "events", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ai-advisor-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ai-advisor-reader
+subjects:
+  - kind: ServiceAccount
+    name: ai-advisor-sa
+    namespace: ticketing
+RBACEOF
+ok "RBAC ClusterRole/ClusterRoleBinding 적용"
+
 # ServiceAccount + CronJob 배포
 kubectl apply -k "$ROOT/k8s/ai-advisor/"
 ok "K8s 리소스 배포 완료"
-
-kubectl rollout status deployment/ai-advisor 2>/dev/null || true
 
 # ==========================================================
 # [10] 즉시 실행 테스트

@@ -521,19 +521,59 @@ STEP 4 — 적용 결과 확인
 [이 섹션이 하는 일]
   AWS setup-all.sh 완료 후 아래 명령 하나로 전부 자동 처리됩니다.
 
+    source .env.local
     bash scripts/setup-gcp.sh
+
+[사전 조건]
+  - setup-all.sh 완료 후 실행 (EKS 클러스터 Running 상태)
+  - gcloud auth login 및 application-default login 완료 ([G-0-C] 참고)
+  - .env.local 에 GEMINI_API_KEY 설정 완료 ([G-0-D] 참고)
 
 [자동 처리 항목]
   [1]  사전 요건 확인 (gcloud / python3 / docker / kubectl)
   [2]  Python 패키지 설치
-  [3]  GCP 로그인 (application-default login)
-  [4]  Workload Identity Federation 구성 (서비스 계정 키 없음)
+  [3]  GCP 로그인 확인 (application-default)
+  [4]  Workload Identity Federation 구성
+       - WIF Pool / AWS Provider / GCP Service Account 생성
+       - IRSA 역할 + EKS 노드 역할 양쪽 WIF 바인딩 (자동)
   [5]  terraform apply — IRSA 역할 + ECR 리포지터리 생성
   [6]  GCP Credential Config 생성 → K8s ConfigMap 적용
+       - IMDSv2 활성화 (--enable-imdsv2)
+       - audience 중복 자동 수정
+       - EKS 노드 IMDS hop limit 2 설정 (Pod → IMDS 접근 허용)
   [7]  ServiceAccount IRSA ARN 자동 주입
   [8]  Docker 이미지 빌드 → ECR push
-  [9]  K8s Secret + CronJob 배포
-  [10] 즉시 실행 테스트
+       ★ CPU 아키텍처 자동 감지 후 분기:
+         AMD64(Windows WSL2 / Linux) → docker build (네이티브)
+         ARM64(Mac M1/M2/M3)        → docker buildx --platform linux/amd64
+       EKS 노드는 항상 linux/amd64 이므로 반드시 amd64 이미지 필요
+  [9]  RBAC ClusterRole 생성 (ai-advisor-sa K8s 리소스 읽기 권한)
+  [10] K8s Secret + CronJob 배포
+  [11] 즉시 실행 테스트
+
+[아키텍처별 Docker 빌드 명령어 (스크립트가 자동 처리, 수동 실행 시 참고)]
+
+  ■ Windows (WSL2) / Linux — AMD64 네이티브
+      ECR_URL=<계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor
+      aws ecr get-login-password --region ap-northeast-2 | \
+        docker login --username AWS --password-stdin <계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com
+      docker build -t ai-advisor:latest -f services/ai-advisor/Dockerfile .
+      docker tag ai-advisor:latest ${ECR_URL}:latest
+      docker push ${ECR_URL}:latest
+
+  ■ Mac M1/M2/M3 (Apple Silicon) — ARM64 → AMD64 크로스빌드 필수
+      ECR_URL=<계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor
+      aws ecr get-login-password --region ap-northeast-2 | \
+        docker login --username AWS --password-stdin <계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com
+      docker buildx build \
+        --platform linux/amd64 \
+        -t ${ECR_URL}:latest \
+        -f services/ai-advisor/Dockerfile \
+        --push .
+    ※ --push 옵션으로 빌드와 push 를 한 번에 실행
+    ※ docker build 로 빌드하면 ARM64 이미지가 생성되어 EKS에서 오류 발생
+
+  ■ Mac Intel — AMD64 네이티브 (Windows WSL2 / Linux 와 동일)
 
 [결과]
   EKS CronJob 이 10분마다 자동 실행됩니다.
