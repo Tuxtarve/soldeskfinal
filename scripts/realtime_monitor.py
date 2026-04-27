@@ -1,23 +1,14 @@
 #!/usr/bin/env python3
 """
-실시간 예측 기반 자동 스케일링 제어기.
-모니터링은 Grafana/Prometheus 에 맡기고, 이 스크립트는 아래만 담당합니다.
-
-  1. 핵심 메트릭 수집  — SQS / RDS / HPA / KEDA / Node / Pod
-  2. 증가율 계산       — 슬라이딩 윈도우 rate
-  3. 임계 도달 시간 예측 — (threshold - current) / rate
-  4. 병목 분류         — 규칙 기반 (CRITICAL / WARNING / OK)
-  5. 스케일링 결정 & 실행 — kubectl patch HPA·KEDA
-  6. 세분화 메트릭 출력 — CLI 또는 파일
+실시간 예측 기반 자동 스케일링 제어기 — 세분화 메트릭 출력.
 
 사용:
   source .env.local
   python3 scripts/realtime_monitor.py              # 반복 출력 (15초 간격)
   python3 scripts/realtime_monitor.py --auto       # 자동 스케일링 포함
-  python3 scripts/realtime_monitor.py --once       # 1회만 출력하고 종료
-  python3 scripts/realtime_monitor.py --file       # 파일로 저장 (반복)
-  python3 scripts/realtime_monitor.py --once --file  # 1회 파일 저장
-  python3 scripts/realtime_monitor.py --interval 10 --auto
+  python3 scripts/realtime_monitor.py --once       # 1회 출력 후 종료
+  python3 scripts/realtime_monitor.py --file       # 파일 저장
+  python3 scripts/realtime_monitor.py --interval 10
 """
 from __future__ import annotations
 
@@ -39,11 +30,11 @@ except ImportError:
     sys.exit("pip install boto3 필요")
 
 ROOT = Path(__file__).resolve().parent.parent
-
 NS         = os.environ.get("NS", "ticketing")
 REGION     = os.environ.get("AWS_REGION", "ap-northeast-2")
 QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "ticketing-reservation.fifo")
 RDS_ID     = "prod-ticketing-writer"
+REDIS_GID  = "ticketing-redis"
 
 THRESHOLDS = {
     "sqs_backlog":  1000,
@@ -51,12 +42,8 @@ THRESHOLDS = {
     "node_cpu_pct":   80,
     "node_mem_pct":   85,
 }
-
 SCALE_AHEAD_SEC = 30
 RATE_WINDOW     = 6
-
-R = "\033[1;31m"; Y = "\033[1;33m"; G = "\033[1;32m"
-C = "\033[1;36m"; W = "\033[1m";    DIM = "\033[2m"; RST = "\033[0m"
 
 
 # ── 증가율 & ETA ───────────────────────────────────────────────────────────────
@@ -97,18 +84,19 @@ def _kubectl(args: list[str]) -> dict:
         return {}
 
 
-def _cw_latest(cw, namespace, metric, dims, minutes=5) -> Optional[float]:
+def _cw(cw, namespace: str, metric: str, dims: list,
+        stat: str = "Average", minutes: int = 5) -> Optional[float]:
     try:
         now = datetime.now(timezone.utc)
         r = cw.get_metric_statistics(
             Namespace=namespace, MetricName=metric, Dimensions=dims,
             StartTime=datetime.fromtimestamp(
                 now.timestamp() - minutes * 60, tz=timezone.utc).isoformat(),
-            EndTime=now.isoformat(), Period=60, Statistics=["Average"]
+            EndTime=now.isoformat(), Period=60, Statistics=[stat]
         )
         pts = sorted(r.get("Datapoints", []),
                      key=lambda x: str(x.get("Timestamp", "")))
-        return round(pts[-1]["Average"], 1) if pts else None
+        return round(pts[-1][stat], 1) if pts else None
     except Exception:
         return None
 
@@ -116,7 +104,7 @@ def _cw_latest(cw, namespace, metric, dims, minutes=5) -> Optional[float]:
 def collect(sqs_client, cw_client) -> dict:
     snap: dict = {}
 
-    # SQS
+    # ── SQS ──
     try:
         url = sqs_client.get_queue_url(QueueName=QUEUE_NAME)["QueueUrl"]
         a = sqs_client.get_queue_attributes(
@@ -129,12 +117,17 @@ def collect(sqs_client, cw_client) -> dict:
     except Exception:
         snap["sqs_backlog"] = snap["sqs_inflight"] = 0
 
-    # RDS
-    v = _cw_latest(cw_client, "AWS/RDS", "DatabaseConnections",
-                   [{"Name": "DBInstanceIdentifier", "Value": RDS_ID}])
-    snap["rds_conn"] = int(v) if v is not None else 0
+    # ── RDS (CloudWatch) ──
+    rds_dims = [{"Name": "DBInstanceIdentifier", "Value": RDS_ID}]
+    snap["rds_conn"]    = int(_cw(cw_client, "AWS/RDS", "DatabaseConnections", rds_dims) or 0)
+    snap["rds_cpu_pct"] = _cw(cw_client, "AWS/RDS", "CPUUtilization", rds_dims) or 0
 
-    # HPA
+    # ── Redis (CloudWatch) ──
+    redis_dims = [{"Name": "ReplicationGroupId", "Value": REDIS_GID}]
+    snap["redis_mem_pct"]  = _cw(cw_client, "AWS/ElastiCache", "DatabaseMemoryUsagePercentage", redis_dims) or 0
+    snap["redis_evictions"]= int(_cw(cw_client, "AWS/ElastiCache", "Evictions", redis_dims, stat="Sum") or 0)
+
+    # ── HPA ──
     hpa_raw = _kubectl(["get", "hpa", "-n", NS])
     snap["hpa"] = []
     for h in hpa_raw.get("items", []):
@@ -153,33 +146,37 @@ def collect(sqs_client, cw_client) -> dict:
             "cpu_pct": int(cpu_pct),
         })
 
-    # KEDA ScaledObjects
+    # ── KEDA ScaledObjects ──
     so_raw = _kubectl(["get", "scaledobject", "-n", NS])
     snap["keda"] = []
     for s in so_raw.get("items", []):
-        target_name = s["spec"].get("scaleTargetRef", {}).get("name", "")
-        q_thr = int(s["spec"].get("triggers", [{}])[0]
-                    .get("metadata", {}).get("queueLength", 1))
         snap["keda"].append({
-            "name":        s["metadata"]["name"],
-            "target":      target_name,
-            "min":         s["spec"].get("minReplicaCount", 0),
-            "max":         s["spec"].get("maxReplicaCount", 10),
-            "queue_thr":   q_thr,
+            "name":      s["metadata"]["name"],
+            "target":    s["spec"].get("scaleTargetRef", {}).get("name", ""),
+            "min":       s["spec"].get("minReplicaCount", 0),
+            "max":       s["spec"].get("maxReplicaCount", 10),
+            "queue_thr": int(s["spec"].get("triggers", [{}])[0]
+                             .get("metadata", {}).get("queueLength", 1)),
         })
 
-    # Pods — 서비스별 running/pending 집계
+    # ── Pods (서비스별 집계) ──
     pods_raw = _kubectl(["get", "pods", "-n", NS])
     pod_map: dict[str, dict] = {}
     for p in pods_raw.get("items", []):
-        labels  = p["metadata"].get("labels", {})
-        app     = labels.get("app", p["metadata"]["name"].rsplit("-", 2)[0])
+        app     = p["metadata"].get("labels", {}).get("app",
+                      p["metadata"]["name"].rsplit("-", 2)[0])
         phase   = p["status"].get("phase", "Unknown")
         restarts = sum(cs.get("restartCount", 0)
                        for cs in p["status"].get("containerStatuses") or [])
+        # OOMKill 감지
+        oom = any(
+            cs.get("lastState", {}).get("terminated", {}).get("reason") == "OOMKilled"
+            for cs in p["status"].get("containerStatuses") or []
+        )
         if app not in pod_map:
-            pod_map[app] = {"running": 0, "pending": 0, "restarts": 0}
+            pod_map[app] = {"running": 0, "pending": 0, "restarts": 0, "oom": False}
         pod_map[app]["restarts"] += restarts
+        pod_map[app]["oom"] = pod_map[app]["oom"] or oom
         if phase == "Running":
             pod_map[app]["running"] += 1
         elif phase == "Pending":
@@ -187,9 +184,31 @@ def collect(sqs_client, cw_client) -> dict:
     snap["pods"] = pod_map
     snap["pending_pods"] = sum(v["pending"] for v in pod_map.values())
 
-    # Node (kubectl top)
+    # ── 최근 스케일 이벤트 ──
+    ev_raw = _kubectl(["get", "events", "-n", NS, "--sort-by=.lastTimestamp"])
+    scale_events = []
+    for e in ev_raw.get("items", []):
+        reason = e.get("reason", "")
+        if any(k in reason for k in ("Scal", "SuccessfulRescale")):
+            ts_raw = (e.get("lastTimestamp") or e.get("eventTime") or "")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                ts_str = ts.astimezone().strftime("%H:%M:%S")
+            except Exception:
+                ts_str = ts_raw[:19]
+            obj  = e.get("involvedObject", {})
+            kind = obj.get("kind", "")
+            name = obj.get("name", "")
+            msg  = (e.get("message") or "")[:80]
+            scale_events.append(f"{ts_str}  {kind}/{name}  {msg}")
+    snap["scale_events"] = scale_events[-5:]  # 최근 5건
+
+    # ── 노드별 상세 (kubectl top nodes) ──
     nodes_raw = _kubectl(["get", "nodes"])
     snap["node_count"] = len(nodes_raw.get("items", []))
+    snap["nodes_detail"] = []
+    snap["node_cpu_pct"] = 0
+    snap["node_mem_pct"] = 0
     try:
         r = subprocess.run(["kubectl", "top", "nodes", "--no-headers"],
                            capture_output=True, text=True, timeout=10)
@@ -197,12 +216,21 @@ def collect(sqs_client, cw_client) -> dict:
         for line in r.stdout.strip().splitlines():
             p = line.split()
             if len(p) >= 5:
-                cpus.append(float(p[2].rstrip("%")))
-                mems.append(float(p[4].rstrip("%")))
-        snap["node_cpu_pct"] = round(sum(cpus)/len(cpus), 1) if cpus else 0
-        snap["node_mem_pct"] = round(sum(mems)/len(mems), 1) if mems else 0
+                cpu = float(p[2].rstrip("%"))
+                mem = float(p[4].rstrip("%"))
+                cpus.append(cpu)
+                mems.append(mem)
+                # 노드 이름 단축 (ip-10-0-x-y → 마지막 두 옥텟만)
+                short = p[0].split(".")[-1] if "." in p[0] else p[0][-12:]
+                snap["nodes_detail"].append({
+                    "name":    short,
+                    "cpu_pct": cpu,
+                    "mem_pct": mem,
+                })
+        snap["node_cpu_pct"] = round(sum(cpus) / len(cpus), 1) if cpus else 0
+        snap["node_mem_pct"] = round(sum(mems) / len(mems), 1) if mems else 0
     except Exception:
-        snap["node_cpu_pct"] = snap["node_mem_pct"] = 0
+        pass
 
     return snap
 
@@ -230,6 +258,8 @@ def classify(snap: dict, trackers: dict) -> list[tuple[str, str]]:
             results.append(("OK",       f"{label}={val}/{thr} {rate_s}"))
     if snap.get("pending_pods", 0) > 0:
         results.append(("WARNING", f"Pending Pods={snap['pending_pods']} (CA 필요)"))
+    if snap.get("redis_evictions", 0) > 0:
+        results.append(("WARNING", f"Redis Eviction={snap['redis_evictions']} (maxmemory 확인)"))
     return results
 
 
@@ -266,63 +296,111 @@ def decide_and_scale(snap: dict, trackers: dict, auto: bool) -> list[str]:
     return actions
 
 
-# ── 세분화 출력 (요청 형식) ────────────────────────────────────────────────────
+# ── 세분화 출력 ────────────────────────────────────────────────────────────────
 def format_output(snap: dict, trackers: dict,
                   levels: list[tuple[str, str]],
                   actions: list[str], args) -> str:
     ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mode = "AUTO" if args.auto else "READ-ONLY"
     lines: list[str] = []
-
-    def add(s: str = "") -> None:
-        lines.append(s)
+    add = lines.append
 
     add(f"=== EKS 실시간 모니터  [{ts}  {mode}] ===")
-    add()
+    add("")
 
-    # ── 현재 상태 ──
+    # ── [현재 상태] ──────────────────────────────────────────────────────────
     add("[현재 상태]")
     add(f"SQS backlog: {snap.get('sqs_backlog', 0)}")
     add(f"RDS conn   : {snap.get('rds_conn', 0)}")
-    add()
+    add("")
 
-    # ── KEDA ──
+    # ── [KEDA] ───────────────────────────────────────────────────────────────
     for so in snap.get("keda", []):
-        add(f"[KEDA - {so['target']}]")
-        add(f"queueLength  : {snap.get('sqs_backlog', 0)}")
+        backlog  = snap.get("sqs_backlog", 0)
+        inflight = snap.get("sqs_inflight", 0)
+        q_thr    = max(so["queue_thr"], 1)
 
         # current replicas: worker pod 수
-        worker_pods = next(
+        worker_run = next(
             (v["running"] for k, v in snap.get("pods", {}).items()
              if so["target"] in k or k in so["target"]), 0)
-        # desired: ceil(backlog / queue_thr) 로 추정, max 범위 내
-        backlog = snap.get("sqs_backlog", 0)
-        desired = min(math.ceil(backlog / max(so["queue_thr"], 1)), so["max"])
-        desired = max(desired, so["min"])
 
-        add(f"current replicas: {worker_pods}")
+        # desired: ceil(backlog / q_thr), 범위 클램프
+        desired = max(so["min"], min(math.ceil(backlog / q_thr), so["max"]))
+
+        # worker 처리 속도: in-flight tracker 기반
+        sqs_rate     = trackers["sqs_backlog"].rate()   # msg/s (양수=증가)
+        # 처리속도 = worker가 소화하는 속도: inflight × (1/처리시간)
+        # rate가 음수면 worker가 더 빠른 것 → -rate 가 처리속도
+        consume_rate = -sqs_rate if sqs_rate < 0 else 0
+        produce_rate =  sqs_rate if sqs_rate > 0 else 0
+
+        # backlog 소화까지: backlog / consume_rate
+        if consume_rate > 0 and backlog > 0:
+            clear_sec = backlog / consume_rate
+            clear_str = f"{clear_sec:.0f} sec"
+        elif produce_rate > 0:
+            clear_str = "증가 중 (worker 추가 필요)"
+        else:
+            clear_str = "안정"
+
+        add(f"[KEDA - {so['target']}]")
+        add(f"queueLength     : {backlog}")
+        add(f"in-flight       : {inflight}")
+        add(f"current replicas: {worker_run}")
         add(f"desired replicas: {desired}")
-        add()
+        add(f"처리 속도       : {sqs_rate:+.1f} msg/sec"
+            f"  (worker {consume_rate:.1f} 소화 / {produce_rate:.1f} 유입)")
+        add(f"backlog 소화까지: {clear_str}")
+        add("")
 
-    # ── HPA ──
+    # ── [HPA] ────────────────────────────────────────────────────────────────
     for hpa in snap.get("hpa", []):
-        label = hpa["name"].replace("-hpa", "").replace("-", " ")
+        label = hpa["name"].replace("-hpa", "")
+        sat   = "  ← 상한 포화!" if hpa["desired"] >= hpa["max"] else ""
         add(f"[HPA - {label}]")
         add(f"cpu    : {hpa.get('cpu_pct', 0)}%")
         add(f"current: {hpa['current']}")
-        add(f"desired: {hpa['desired']}")
+        add(f"desired: {hpa['desired']}{sat}")
         add(f"max    : {hpa['max']}")
-        add()
+        add("")
 
-    # ── Node / CA ──
+    # ── [Node / CA] ──────────────────────────────────────────────────────────
     add("[Node / CA]")
     add(f"node count  : {snap.get('node_count', 0)}")
-    add(f"cpu usage   : {snap.get('node_cpu_pct', 0)}%")
-    add(f"memory usage: {snap.get('node_mem_pct', 0)}%")
-    add(f"pending pods: {snap.get('pending_pods', 0)}")
-    add()
+    for nd in snap.get("nodes_detail", []):
+        cpu_w = "!!" if nd["cpu_pct"] >= 80 else "  "
+        mem_w = "!!" if nd["mem_pct"] >= 85 else "  "
+        add(f"  {nd['name']:<30}"
+            f"  CPU {cpu_w}{nd['cpu_pct']:5.1f}%"
+            f"  MEM {mem_w}{nd['mem_pct']:5.1f}%")
+    pending = snap.get("pending_pods", 0)
+    add(f"pending pods: {pending}"
+        + ("  ← CA 노드 추가 대기 중" if pending > 0 else ""))
+    add("")
 
-    # ── Pod 상태 ──
+    # ── [데이터 계층] ─────────────────────────────────────────────────────────
+    add("[데이터 계층]")
+    rds_conn = snap.get("rds_conn", 0)
+    rds_cpu  = snap.get("rds_cpu_pct", 0)
+    # 서비스별 커넥션 추정 (worker: pool≈40, write-api: pool≈5)
+    worker_run_total = sum(
+        v["running"] for k, v in snap.get("pods", {}).items() if "worker" in k)
+    write_run_total = sum(
+        v["running"] for k, v in snap.get("pods", {}).items() if "write" in k)
+    est_worker_conn = worker_run_total * 40
+    est_write_conn  = write_run_total  * 5
+    add(f"RDS CPU  : {rds_cpu}%")
+    add(f"RDS conn : {rds_conn} / 180  "
+        f"(worker 추정 {est_worker_conn}  write-api 추정 {est_write_conn})")
+    redis_mem = snap.get("redis_mem_pct", 0)
+    redis_ev  = snap.get("redis_evictions", 0)
+    ev_warn   = "  ← maxmemory-policy 확인!" if redis_ev > 0 else ""
+    add(f"Redis MEM: {redis_mem}%"
+        f"  evictions: {redis_ev}{ev_warn}")
+    add("")
+
+    # ── [Pod 상태] ───────────────────────────────────────────────────────────
     add("[Pod 상태]")
     KEY_ORDER = ["worker-svc", "read-api", "write-api"]
     shown = set()
@@ -330,48 +408,66 @@ def format_output(snap: dict, trackers: dict,
         for app, st in snap.get("pods", {}).items():
             if key in app and app not in shown:
                 shown.add(app)
-                p_str = f"  {st['pending']} pending" if st["pending"] else ""
-                r_str = f"  재시작={st['restarts']}" if st["restarts"] else ""
-                add(f"{app}: {st['running']} running{p_str}{r_str}")
+                parts = [f"{st['running']} running"]
+                if st["pending"]:
+                    parts.append(f"{st['pending']} pending")
+                if st["restarts"] > 0:
+                    oom_flag = " [OOMKill!]" if st["oom"] else ""
+                    parts.append(f"재시작={st['restarts']}{oom_flag}")
+                add(f"  {app:<22} {' / '.join(parts)}")
     for app, st in snap.get("pods", {}).items():
         if app not in shown:
-            p_str = f"  {st['pending']} pending" if st["pending"] else ""
-            add(f"{app}: {st['running']} running{p_str}")
-    add()
+            parts = [f"{st['running']} running"]
+            if st["pending"]:
+                parts.append(f"{st['pending']} pending")
+            if st["restarts"]:
+                oom_flag = " [OOMKill!]" if st["oom"] else ""
+                parts.append(f"재시작={st['restarts']}{oom_flag}")
+            add(f"  {app:<22} {' / '.join(parts)}")
+    add("")
 
-    # ── 예측 ──
+    # ── [스케일 이벤트] ──────────────────────────────────────────────────────
+    events = snap.get("scale_events", [])
+    if events:
+        add("[스케일 이력]")
+        for ev in events:
+            add(f"  {ev}")
+        add("")
+
+    # ── [예측] ───────────────────────────────────────────────────────────────
     add("[예측]")
     sqs_rate = trackers["sqs_backlog"].rate()
     sqs_eta  = trackers["sqs_backlog"].eta(THRESHOLDS["sqs_backlog"])
     rds_rate = trackers["rds_conn"].rate()
     rds_eta  = trackers["rds_conn"].eta(THRESHOLDS["rds_conn"])
+    cpu_rate = trackers["node_cpu_pct"].rate()
+    cpu_eta  = trackers["node_cpu_pct"].eta(THRESHOLDS["node_cpu_pct"])
 
-    add(f"SQS 증가 속도: {sqs_rate:+.1f} msg/sec")
-    if sqs_eta is not None:
-        add(f"SQS 임계까지: {sqs_eta:.1f} sec")
-    else:
-        add("SQS 임계까지: 안정 (증가 없음)")
+    add(f"SQS 증가 속도: {sqs_rate:+.1f} msg/sec"
+        + (f"  임계까지: {sqs_eta:.1f} sec" if sqs_eta is not None else "  안정"))
+    add(f"RDS 증가 속도: {rds_rate:+.1f} conn/sec"
+        + (f"  임계까지: {rds_eta:.1f} sec" if rds_eta is not None else "  안정"))
+    add(f"Node CPU 속도: {cpu_rate:+.2f} %/sec"
+        + (f"  임계까지: {cpu_eta:.1f} sec" if cpu_eta is not None else "  안정"))
+    add("")
 
-    add(f"RDS 증가 속도: {rds_rate:+.1f} conn/sec")
-    if rds_eta is not None:
-        add(f"RDS 임계까지: {rds_eta:.1f} sec")
-    else:
-        add("RDS 임계까지: 안정")
-    add()
-
-    # ── 병목 ──
+    # ── [병목 분석] ──────────────────────────────────────────────────────────
     add("[병목 분석]")
     for lvl, msg in levels:
-        prefix = {"CRITICAL": "!! CRITICAL", "WARNING": "!  WARNING ", "OK": "   OK      "}.get(lvl, lvl)
-        add(f"{prefix} {msg}")
-    add()
+        prefix = {
+            "CRITICAL": "!! CRITICAL",
+            "WARNING":  "!  WARNING ",
+            "OK":       "   OK      ",
+        }.get(lvl, lvl)
+        add(f"  {prefix} {msg}")
+    add("")
 
-    # ── 스케일링 ──
+    # ── [스케일링 행동] ──────────────────────────────────────────────────────
     if actions:
         add("[스케일링 행동]")
         for act in actions:
             add(f"  {act}")
-        add()
+        add("")
 
     return "\n".join(lines)
 
@@ -391,13 +487,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="EKS 실시간 세분화 메트릭 + 예측 스케일러")
     parser.add_argument("--auto",     action="store_true",  help="자동 스케일링")
     parser.add_argument("--once",     action="store_true",  help="1회 출력 후 종료")
-    parser.add_argument("--file",     action="store_true",  help="파일로 저장 (scripts/data/monitor-latest.txt)")
-    parser.add_argument("--interval", type=int, default=15, help="갱신 주기(초), 기본 15")
+    parser.add_argument("--file",     action="store_true",  help="파일 저장")
+    parser.add_argument("--interval", type=int, default=15, help="갱신 주기(초)")
     args = parser.parse_args()
 
-    out_path = ROOT / "scripts" / "data" / "monitor-latest.txt"
+    out_dir = ROOT / "scripts" / "data"
     if args.file:
-        out_path.parent.mkdir(exist_ok=True)
+        out_dir.mkdir(exist_ok=True)
 
     sqs_client = boto3.client("sqs",        region_name=REGION)
     cw_client  = boto3.client("cloudwatch", region_name=REGION)
@@ -411,7 +507,7 @@ def main() -> int:
 
     while True:
         try:
-            snap = collect(sqs_client, cw_client)
+            snap    = collect(sqs_client, cw_client)
             trackers["sqs_backlog"].push(snap.get("sqs_backlog", 0))
             trackers["rds_conn"].push(snap.get("rds_conn", 0))
             trackers["node_cpu_pct"].push(snap.get("node_cpu_pct", 0))
@@ -422,10 +518,11 @@ def main() -> int:
             output  = format_output(snap, trackers, levels, actions, args)
 
             if args.file:
-                out_path.write_text(output, encoding="utf-8")
-                ts_path = out_path.parent / f"monitor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
-                ts_path.write_text(output, encoding="utf-8")
-                print(f"저장: {out_path}  ({ts_path.name})")
+                latest = out_dir / "monitor-latest.txt"
+                latest.write_text(output, encoding="utf-8")
+                ts_file = out_dir / f"monitor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+                ts_file.write_text(output, encoding="utf-8")
+                print(f"저장: {latest}  ({ts_file.name})")
             else:
                 print(output)
 
