@@ -165,41 +165,6 @@ OS에 따라 아래 내용을 반드시 확인하세요.
 ▶ Mac Intel — 별도 조치 불필요
   [0-A] macOS(Homebrew) 항목 그대로 진행하면 됩니다.
 
-──────────────────────────────────────────────────────────
-[0-F] 알려진 오류 및 해결법
-──────────────────────────────────────────────────────────
-
-■ [오류 1] kubectl: cannot execute binary file: Exec format error
-  원인: kubectl 바이너리 아키텍처가 OS와 불일치 (예: ARM64 머신에 AMD64 kubectl)
-  해결: [0-E] 항목 참고하여 맞는 아키텍처 버전으로 교체
-
-■ [오류 2] EKS Add-On (aws-ebs-csi-driver) timeout: waiting for state to become 'ACTIVE'
-  원인: t3.small 노드 2대의 메모리 부족으로 EBS CSI 컨트롤러 Pod 2번째가 Pending
-  해결: 아래 순서 실행
-    1) 기존 애드온 삭제
-         aws eks delete-addon --cluster-name ticketing-eks \
-           --addon-name aws-ebs-csi-driver --region ap-northeast-2
-    2) 삭제 완료 대기 (약 30초)
-    3) 컨트롤러 1대로 재생성
-         aws eks create-addon \
-           --cluster-name ticketing-eks \
-           --addon-name aws-ebs-csi-driver \
-           --region ap-northeast-2 \
-           --service-account-role-arn arn:aws:iam::<계정ID>:role/ticketing-eks-ebs-csi-driver-role \
-           --configuration-values '{"controller":{"replicaCount":1,"resources":{"limits":{"cpu":"100m","memory":"200Mi"},"requests":{"cpu":"100m","memory":"200Mi"}}},"node":{"resources":{"limits":{"cpu":"50m","memory":"100Mi"},"requests":{"cpu":"50m","memory":"100Mi"}}}}' \
-           --resolve-conflicts OVERWRITE
-    4) ACTIVE 확인 후 terraform state import
-         aws eks describe-addon --cluster-name ticketing-eks \
-           --addon-name aws-ebs-csi-driver --query 'addon.status' --output text
-         cd terraform
-         terraform import module.eks.aws_eks_addon.ebs_csi ticketing-eks:aws-ebs-csi-driver
-    5) setup-all.sh 이어서 실행
-
-■ [오류 3] No value for required variable "db_password"
-  원인: terraform.tfvars 에 db_password 주석 처리됨
-  해결: 환경변수로 전달
-       export TF_VAR_db_password='비밀번호'
-       bash scripts/setup-all.sh
 ==========================================================
  1. Fork & Clone
 ==========================================================
@@ -386,24 +351,28 @@ gcloud auth application-default login 한 번으로 Python SDK 가 자동 인증
 ──────────────────────────────────────────────────────────
 [G-0-D] .env.local 생성 (git 에 올라가지 않음)
 ──────────────────────────────────────────────────────────
-프로젝트 루트에 .env.local 파일을 만들고 아래 내용 입력.
-이 파일은 .gitignore 로 제외되어 있어 git 에 절대 올라가지 않습니다.
+프로젝트 루트(soldeskfinal/)에 .env.local 파일을 아래 명령어로 생성합니다.
+이 파일은 .gitignore 로 제외되어 git 에 절대 올라가지 않습니다.
 
-    GEMINI_API_KEY=발급받은_키_입력
-    GEMINI_MODEL=gemini-2.5-flash
-
+■ Windows (WSL2) / Linux — 터미널에서 실행:
+    cat > .env.local << 'EOF'
+    export DB_PASSWORD='본인_DB_비밀번호'
+    export TF_VAR_db_password='본인_DB_비밀번호'
+    export GEMINI_API_KEY=발급받은_키_입력
+    export GEMINI_MODEL=gemini-2.5-flash-lite
+    export AWS_REGION=ap-northeast-2
     # Slack 알림 쓰려면 주석 해제 후 URL 입력
-    # SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+    # export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+    EOF
+
+  ※ DB_PASSWORD 는 prepare.sh 실행 시 입력한 값과 동일하게 입력
 
 Gemini API 키 발급:
   https://aistudio.google.com → "Get API key" → 키 복사
 
-■ macOS / Linux 연결 확인:
+연결 확인:
     source .env.local && python3 scripts/gemini_ping.py
-
-■ Windows (PowerShell) 연결 확인:
-    $env:GEMINI_API_KEY="발급받은_키_입력"
-    python3 scripts/gemini_ping.py
+    # OK 나오면 정상
 
 
 ==========================================================
@@ -428,13 +397,11 @@ Gemini API 키 발급:
 ──────────────────────────────────────────────────────────
 [G-2-1] 메트릭 수집
 ──────────────────────────────────────────────────────────
-■ macOS / Linux
+■ Windows (WSL2) / Linux
     source .env.local
     python3 scripts/collect_metrics.py
 
-■ Windows (PowerShell)
-    $env:GEMINI_API_KEY="키값"
-    python3 scripts/collect_metrics.py
+  ※ AWS_REGION 이 .env.local 에 없으면 오류 발생 — [G-0-D] 에서 설정 확인
 
   → scripts/data/metrics-<타임스탬프>.json 생성
   → EKS 노드·Pod·HPA·KEDA·SQS + Prometheus 트렌드 + CloudWatch RDS/Redis
@@ -443,11 +410,15 @@ Gemini API 키 발급:
 ──────────────────────────────────────────────────────────
 [G-2-2] Gemini 추천 받기
 ──────────────────────────────────────────────────────────
+    source .env.local
     python3 scripts/recommend_scaling.py
 
-  → Gemini 2.5 Flash 가 메트릭을 분석해 스케일링 추천 생성
+  → Gemini 2.5 Flash Lite 가 메트릭을 분석해 스케일링 추천 생성
   → scripts/data/recommendation-<타임스탬프>.json 저장
   → 터미널에 우선순위별 요약 표 출력 (NOW / WATCH / LATER)
+
+  ※ 사용 모델: gemini-2.5-flash-lite (무료 티어 기준, .env.local 에서 변경 가능)
+     gemini-1.5-flash / gemini-2.0-flash 는 지원 종료 — 사용 불가
 
 ──────────────────────────────────────────────────────────
 [G-2-3] Kustomize 패치 파일 생성
@@ -491,7 +462,7 @@ Gemini API 키 발급:
 ──────────────────────────────────────────────────────────
 [G-2-7] 한 방 실행 (전체 파이프라인)
 ──────────────────────────────────────────────────────────
-■ macOS / Linux
+■ Windows (WSL2) / Linux
     source .env.local && \
     python3 scripts/collect_metrics.py && \
     python3 scripts/push_metrics_to_cloud_logging.py && \
@@ -500,14 +471,8 @@ Gemini API 키 발급:
     python3 scripts/push_to_cloud_logging.py && \
     python3 scripts/notify.py
 
-■ Windows (PowerShell — 세미콜론으로 이어서 실행)
-    $env:GEMINI_API_KEY="키값"; $env:SLACK_WEBHOOK_URL="웹훅URL"
-    python3 scripts/collect_metrics.py; `
-    python3 scripts/push_metrics_to_cloud_logging.py; `
-    python3 scripts/recommend_scaling.py; `
-    python3 scripts/recommendation_to_patches.py; `
-    python3 scripts/push_to_cloud_logging.py; `
-    python3 scripts/notify.py
+  ※ source .env.local 을 반드시 먼저 실행해야 합니다
+     (GEMINI_API_KEY, AWS_REGION, GEMINI_MODEL 등 환경변수 로드)
 
 
 ==========================================================
