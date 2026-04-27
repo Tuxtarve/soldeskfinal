@@ -330,10 +330,12 @@ resource "aws_eks_addon" "ebs_csi" {
   service_account_role_arn    = aws_iam_role.ebs_csi.arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
-  # QoS: controller 는 PV 프로비저닝 주체라 Guaranteed. node 는 DaemonSet — attach/detach 이벤트만 처리라 가볍게.
-  # 기본 limits 가 비정상적으로 컸음(controller 1312Mi) → 현실적 값으로 고정.
+  # t3.small 노드 메모리 한계(2GiB)로 controller 2대가 동시 스케줄 불가.
+  # replicaCount=1 로 고정해 두 번째 Pod Pending → addon CREATING 타임아웃 방지.
+  # HA 불필요: 프로젝트 규모상 PV 프로비저닝 단일 controller 로 충분.
   configuration_values = jsonencode({
     controller = {
+      replicaCount = 1
       resources = {
         requests = { cpu = "100m", memory = "200Mi" }
         limits   = { cpu = "100m", memory = "200Mi" }
