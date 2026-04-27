@@ -22,7 +22,7 @@ spec:
             - name: ai-advisor
               # prepare.sh / setup-all.sh 가 ECR URI 를 주입 (실제 배포 시)
               # 로컬 테스트: docker build -t ai-advisor:latest -f services/ai-advisor/Dockerfile .
-              image: PLACEHOLDER_ECR_URI/ai-advisor:latest
+              image: 032098305878.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor:latest
               imagePullPolicy: Always
 
               env:

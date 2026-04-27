@@ -319,9 +319,21 @@ def collect_sqs(queue_name: str, region: str) -> dict:
 # 2. GCP 전송
 # ============================================================
 
+def _serialize(obj):
+    """datetime 등 JSON 직렬화 불가 타입을 문자열로 변환."""
+    from datetime import datetime, date
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_serialize(v) for v in obj]
+    return obj
+
+
 def gcp_push(log_name: str, payload: dict, severity: str) -> None:
     client = gcp_logging.Client(project=PROJECT_ID)
-    client.logger(log_name).log_struct(payload, severity=severity)
+    client.logger(log_name).log_struct(_serialize(payload), severity=severity)
     print(f"[+] GCP 전송 완료: {log_name} [{severity}]", flush=True)
 
 
