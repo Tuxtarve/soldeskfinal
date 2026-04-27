@@ -421,17 +421,56 @@ Gemini API 키 발급:
      gemini-1.5-flash / gemini-2.0-flash 는 지원 종료 — 사용 불가
 
 ──────────────────────────────────────────────────────────
-[G-2-3] Kustomize 패치 파일 생성
+[G-2-3] Kustomize 패치 파일 생성 및 적용
 ──────────────────────────────────────────────────────────
+    source .env.local
     python3 scripts/recommendation_to_patches.py
 
   → scripts/data/patches-<타임스탬프>/ 디렉터리 생성
   → HPA·Deployment·KEDA 등 Kubernetes 리소스별 YAML 파일 자동 생성
-  → 적용 전 반드시 README.md 확인 후 수동 검토
+  → manual-actions.md : YAML 로 표현 불가능한 항목(RDS, Redis 등) 수동 조치 목록
+  → README.md         : 전체 요약 + 적용 순서 안내
 
-패치 적용 예시 (검토 후):
-    kubectl apply -n ticketing --dry-run=server -f scripts/data/patches-<ts>/00-hpa-read-api.yaml
-    kubectl apply -n ticketing -f scripts/data/patches-<ts>/00-hpa-read-api.yaml
+생성 결과 확인:
+    ls scripts/data/patches-<ts>/
+    cat scripts/data/patches-<ts>/README.md
+
+──────────────────────────────────────────────────────────
+패치 적용 순서 (파일 하나씩 검토 후 적용)
+──────────────────────────────────────────────────────────
+
+STEP 1 — 서버 검증 (API 서버가 실제로 수락하는지 확인)
+    kubectl apply -n ticketing --dry-run=server \
+      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+    kubectl apply -n ticketing --dry-run=server \
+      -f scripts/data/patches-<ts>/01-hpa-write-api-hpa.yaml
+  → 오류 없으면 다음 단계 진행
+
+STEP 2 — diff 확인 ⭐ 강추 (현재 클러스터 값과 변경 후 값 비교)
+    kubectl diff -n ticketing \
+      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+    kubectl diff -n ticketing \
+      -f scripts/data/patches-<ts>/01-hpa-write-api-hpa.yaml
+  → "-" 현재값, "+" 변경될 값 확인 후 이상 없으면 다음 단계 진행
+
+STEP 3 — 실제 적용
+    kubectl apply -n ticketing \
+      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+    kubectl apply -n ticketing \
+      -f scripts/data/patches-<ts>/01-hpa-write-api-hpa.yaml
+
+STEP 4 — 적용 결과 확인
+    # HPA 상태 확인
+    kubectl get hpa -n ticketing
+    # Deployment replicas 확인
+    kubectl get deployment -n ticketing
+    # KEDA ScaledObject 확인 (worker 관련 패치 적용 시)
+    kubectl get scaledobject -n ticketing
+    # 변경된 리소스 상세 확인
+    kubectl describe hpa read-api-hpa -n ticketing
+
+  ※ <ts> 는 실제 생성된 타임스탬프 폴더명으로 교체하세요
+     예) patches-20260427-063737
 
 ──────────────────────────────────────────────────────────
 [G-2-4] 메트릭 → GCP Cloud Logging 전송 (원본 보관)
