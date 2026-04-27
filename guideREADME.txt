@@ -98,22 +98,108 @@ GitHub Secrets(AWS_ACCOUNT_ID) 를 prepare.sh 가 자동으로 등록하려면:
     gh auth login                    # 브라우저 열려서 로그인
 
 gh 없으면 prepare.sh 가 수동 설치 방법을 안내합니다.
+
 ■ macOS (Homebrew)
-brew install gh
+    brew install gh
 
 ■ Windows (PowerShell, 관리자 권한)
-winget install -e --id GitHub.cli
+    winget install -e --id GitHub.cli
 
-■ Ubuntu / WSL / Linux
-sudo apt updatesudo apt install -y gh
+■ Ubuntu / WSL2 / Linux
+    sudo apt update && sudo apt install -y gh
 
 ■ 설치 확인
-gh --version
-정상 출력 예:
-gh version 2.x.x
+    gh --version        # gh version 2.x.x 나오면 OK
 
 ■ 로그인 (자동 설정용)
-gh auth login
+    gh auth login
+
+──────────────────────────────────────────────────────────
+[0-E] OS별 주의사항 ★ Windows 팀원 필독
+──────────────────────────────────────────────────────────
+
+이 프로젝트의 배포 스크립트(setup-all.sh, setup-gcp.sh)는 bash 기반입니다.
+OS에 따라 아래 내용을 반드시 확인하세요.
+
+┌─────────────────────────────────────────────────────────┐
+│ OS              │ 배포 방법         │ kubectl 아키텍처  │
+│─────────────────┼───────────────────┼───────────────────│
+│ Mac (M1/M2/M3)  │ 터미널 직접 실행  │ ARM64  ← 주의!   │
+│ Mac (Intel)     │ 터미널 직접 실행  │ AMD64 (기본)      │
+│ Windows         │ WSL2(Ubuntu) 필수 │ AMD64 (WSL2 기준) │
+└─────────────────────────────────────────────────────────┘
+
+▶ Windows — WSL2 필수 설치
+  PowerShell에서 bash 스크립트를 직접 실행할 수 없습니다.
+  반드시 WSL2(Ubuntu)를 설치하고, 그 안에서 모든 작업을 진행하세요.
+
+  1) WSL2 + Ubuntu 설치 (PowerShell 관리자 권한)
+       wsl --install -d Ubuntu
+     → 재부팅 후 Ubuntu 터미널 열기
+
+  2) WSL2 안에서 kubectl 설치 (AMD64 버전)
+       curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+       chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+       kubectl version --client       # 버전 나오면 OK
+
+  3) WSL2 안에서 AWS CLI, Terraform, Docker 등 나머지 도구 설치
+     → [0-A] Ubuntu / WSL / Linux 항목 참고
+
+  4) Docker Desktop for Windows 설치 후
+     Settings → Resources → WSL Integration → Ubuntu 활성화
+
+▶ Mac Apple Silicon (M1/M2/M3) — kubectl ARM64 버전 필수
+  Homebrew로 설치하면 자동으로 ARM64 버전이 설치됩니다.
+  다른 경로(curl, 직접 다운로드)로 설치했다면 아래로 확인하세요.
+
+  아키텍처 확인:
+       file $(which kubectl)
+     → "arm64" 나오면 OK
+     → "x86-64" 나오면 아래 명령으로 교체:
+
+  교체 방법:
+       curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl"
+       chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+       kubectl version --client       # 버전 나오면 OK
+
+▶ Mac Intel — 별도 조치 불필요
+  [0-A] macOS(Homebrew) 항목 그대로 진행하면 됩니다.
+
+──────────────────────────────────────────────────────────
+[0-F] 알려진 오류 및 해결법
+──────────────────────────────────────────────────────────
+
+■ [오류 1] kubectl: cannot execute binary file: Exec format error
+  원인: kubectl 바이너리 아키텍처가 OS와 불일치 (예: ARM64 머신에 AMD64 kubectl)
+  해결: [0-E] 항목 참고하여 맞는 아키텍처 버전으로 교체
+
+■ [오류 2] EKS Add-On (aws-ebs-csi-driver) timeout: waiting for state to become 'ACTIVE'
+  원인: t3.small 노드 2대의 메모리 부족으로 EBS CSI 컨트롤러 Pod 2번째가 Pending
+  해결: 아래 순서 실행
+    1) 기존 애드온 삭제
+         aws eks delete-addon --cluster-name ticketing-eks \
+           --addon-name aws-ebs-csi-driver --region ap-northeast-2
+    2) 삭제 완료 대기 (약 30초)
+    3) 컨트롤러 1대로 재생성
+         aws eks create-addon \
+           --cluster-name ticketing-eks \
+           --addon-name aws-ebs-csi-driver \
+           --region ap-northeast-2 \
+           --service-account-role-arn arn:aws:iam::<계정ID>:role/ticketing-eks-ebs-csi-driver-role \
+           --configuration-values '{"controller":{"replicaCount":1,"resources":{"limits":{"cpu":"100m","memory":"200Mi"},"requests":{"cpu":"100m","memory":"200Mi"}}},"node":{"resources":{"limits":{"cpu":"50m","memory":"100Mi"},"requests":{"cpu":"50m","memory":"100Mi"}}}}' \
+           --resolve-conflicts OVERWRITE
+    4) ACTIVE 확인 후 terraform state import
+         aws eks describe-addon --cluster-name ticketing-eks \
+           --addon-name aws-ebs-csi-driver --query 'addon.status' --output text
+         cd terraform
+         terraform import module.eks.aws_eks_addon.ebs_csi ticketing-eks:aws-ebs-csi-driver
+    5) setup-all.sh 이어서 실행
+
+■ [오류 3] No value for required variable "db_password"
+  원인: terraform.tfvars 에 db_password 주석 처리됨
+  해결: 환경변수로 전달
+       export TF_VAR_db_password='비밀번호'
+       bash scripts/setup-all.sh
 ==========================================================
  1. Fork & Clone
 ==========================================================
