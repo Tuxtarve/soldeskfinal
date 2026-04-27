@@ -35,34 +35,35 @@
   aws, kubectl, helm, terraform, docker  ← 필수
   gh                                     ← 선택 (GitHub Secrets 자동 등록용)
 
-■ Windows (PowerShell 관리자 권한)
-    winget install -e --id Amazon.AWSCLI
-    winget install -e --id Kubernetes.kubectl
-    winget install -e --id Helm.Helm
-    winget install -e --id Hashicorp.Terraform
-    winget install -e --id Docker.DockerDesktop
-    winget install -e --id GitHub.cli      # 선택
-  → 설치 끝나면 PowerShell 창 닫고 Git Bash 새로 열기.
-
-■ macOS (Homebrew 후)
-    brew install awscli kubectl helm terraform gh
-    brew install --cask docker
-
-■ Ubuntu / WSL / Linux
-    # aws
+■ Windows — WSL2(Ubuntu) 안에서 설치 ([0-E] WSL2 설치 먼저)
+    # AWS CLI
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip \
       && unzip -q awscliv2.zip && sudo ./aws/install && rm -rf aws awscliv2.zip
-    # kubectl
+    # kubectl (AMD64 — setup-all.sh 가 아키텍처 자동 교체하므로 없으면 자동 설치)
     curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-      && chmod +x kubectl && sudo mv kubectl /usr/local/bin/
-    # helm
+      && chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+    # helm / terraform / gh
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-    # terraform
     wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg \
-      && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list \
+      && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+      | sudo tee /etc/apt/sources.list.d/hashicorp.list \
       && sudo apt update && sudo apt install -y terraform gh
-    # docker
+    # Docker Desktop for Windows 설치 후 WSL Integration 활성화
+    #   Settings → Resources → WSL Integration → Ubuntu 체크
+
+■ Linux — 네이티브 터미널
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip \
+      && unzip -q awscliv2.zip && sudo ./aws/install && rm -rf aws awscliv2.zip
+    curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+      && chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg \
+      && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+      | sudo tee /etc/apt/sources.list.d/hashicorp.list \
+      && sudo apt update && sudo apt install -y terraform gh
     curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER && newgrp docker
+
+■ Mac → MacREADME.txt 참고
 
 확인 (전부 버전이 나오면 OK):
     aws --version && kubectl version --client && helm version --short \
@@ -83,10 +84,11 @@ AWS 콘솔 → IAM → 본인 user → Security credentials → "Create access k
     aws sts get-caller-identity      # 12자리 계정 ID 나오면 OK
 
 ──────────────────────────────────────────────────────────
-[0-C] Docker Desktop 실행
+[0-C] Docker 실행 확인
 ──────────────────────────────────────────────────────────
-  Windows/macOS: Docker Desktop 앱 실행 (고래 아이콘 "Running")
-  Linux: 위에서 설치했으면 자동 실행 중.
+  Windows : Docker Desktop 앱 실행 (고래 아이콘 "Running") + WSL Integration 활성화
+  Linux   : 위에서 설치했으면 자동 실행 중
+  Mac     : MacREADME.txt 참고
 
     docker ps                        # 에러 없으면 OK
 
@@ -99,14 +101,10 @@ GitHub Secrets(AWS_ACCOUNT_ID) 를 prepare.sh 가 자동으로 등록하려면:
 
 gh 없으면 prepare.sh 가 수동 설치 방법을 안내합니다.
 
-■ macOS (Homebrew)
-    brew install gh
-
-■ Windows (PowerShell, 관리자 권한)
-    winget install -e --id GitHub.cli
-
-■ Ubuntu / WSL2 / Linux
+■ Windows (WSL2) / Linux
     sudo apt update && sudo apt install -y gh
+
+■ Mac → MacREADME.txt 참고
 
 ■ 설치 확인
     gh --version        # gh version 2.x.x 나오면 OK
@@ -118,44 +116,57 @@ gh 없으면 prepare.sh 가 수동 설치 방법을 안내합니다.
 [0-E] OS별 주의사항 ★ Windows 팀원 필독
 ──────────────────────────────────────────────────────────
 
-이 프로젝트의 배포 스크립트(setup-all.sh, setup-gcp.sh)는 bash 기반입니다.
-OS에 따라 아래 내용을 반드시 확인하세요.
+배포 스크립트(setup-all.sh, setup-gcp.sh)는 bash 기반입니다.
 
-│ OS              │ 배포 방법         │ kubectl 아키텍처 │
-│─────────────────┼─────────────────┼────────────────│ 
-│ Mac (M1/M2/M3)  │ 터미널 직접 실행    │ ARM64  ← 주의!  │
-│ Windows         │ WSL2(Ubuntu) 필수 │ AMD64 (WSL2 기준) │
+┌──────────────┬──────────────────────────┬───────────────────────────┐
+│ OS           │ 배포 방법                │ 비고                      │
+├──────────────┼──────────────────────────┼───────────────────────────┤
+│ Windows      │ WSL2(Ubuntu) 필수        │ PowerShell 직접 실행 불가 │
+│ Linux        │ 네이티브 터미널          │ [0-A] Linux 항목 그대로   │
+│ Mac          │ MacREADME.txt 전용 가이드│ 별도 주의사항 있음        │
+└──────────────┴──────────────────────────┴───────────────────────────┘
 
 ▶ Windows — WSL2 필수 설치
-  PowerShell에서 bash 스크립트를 직접 실행할 수 없습니다.
-  반드시 WSL2(Ubuntu)를 설치하고, 그 안에서 모든 작업을 진행하세요.
-
-  1) WSL2 + Ubuntu 설치 (PowerShell 관리자 권한)
+  1) WSL2 + Ubuntu 설치 (PowerShell 관리자 권한, 한 번만)
        wsl --install -d Ubuntu
-     → 재부팅 후 Ubuntu 터미널 열기
+     → 재부팅 후 Ubuntu 터미널 열기. 이후 모든 작업은 Ubuntu 터미널 안에서.
 
-  2) WSL2 안에서 kubectl 설치 (AMD64 버전)
-       curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-       chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-       kubectl version --client       # 버전 나오면 OK
+  2) Docker Desktop for Windows 설치
+     Settings → Resources → WSL Integration → Ubuntu 체크 → Apply
 
+  3) [0-A] Windows 항목의 명령어를 Ubuntu 터미널에서 실행
 
-▶ Mac Apple Silicon (M1/M2/M3) — kubectl ARM64 버전 필수
-  Homebrew로 설치하면 자동으로 ARM64 버전이 설치됩니다.
-  다른 경로(curl, 직접 다운로드)로 설치했다면 아래로 확인하세요.
+▶ Windows 시간 ↔ WSL 시간 동기화 오류 시
+    sudo apt install -y ntpdate && sudo ntpdate time.windows.com
 
-  아키텍처 확인:
-       file $(which kubectl)
-     → "arm64" 나오면 OK
-     → "x86-64" 나오면 아래 명령으로 교체:
+──────────────────────────────────────────────────────────
+[0-F] 알려진 오류 및 해결법
+──────────────────────────────────────────────────────────
 
-  교체 방법:
-       curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl"
-       chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-       kubectl version --client       # 버전 나오면 OK
+■ [오류 1] EKS Add-On (aws-ebs-csi-driver) timeout 20분
+  원인: t3.small 노드 메모리 부족으로 EBS CSI controller Pod 2번째 Pending
+  해결: terraform 코드에 replicaCount=1 이미 고정됨 (재발 없음)
+  재발 시:
+    aws eks delete-addon --cluster-name ticketing-eks \
+      --addon-name aws-ebs-csi-driver --region ap-northeast-2
+    # 삭제 완료 후 (30초 대기)
+    aws eks create-addon --cluster-name ticketing-eks \
+      --addon-name aws-ebs-csi-driver --region ap-northeast-2 \
+      --configuration-values '{"controller":{"replicaCount":1}}' \
+      --resolve-conflicts OVERWRITE
+    cd terraform && terraform import module.eks.aws_eks_addon.ebs_csi \
+      ticketing-eks:aws-ebs-csi-driver
 
-▶ Windows 시간 ↔ WSL 시간 동기화
-sudo apt install ntpdate -y
+■ [오류 2] No value for required variable "db_password"
+  해결:
+    export TF_VAR_db_password='본인_DB_비밀번호'
+    bash scripts/setup-all.sh
+
+■ [오류 3] Helm/KEDA "another operation in progress"
+  해결:
+    kubectl delete namespace keda --force --grace-period=0
+    cd terraform && terraform state rm helm_release.keda[0]
+    bash scripts/setup-all.sh  # 이어서 실행
 
 ==========================================================
  1. Fork & Clone
@@ -219,9 +230,8 @@ sudo apt install ntpdate -y
 
 [B] ArgoCD UI
   마지막 출력 "ArgoCD UI:" URL 접속
-  로그인: admin / 아래 명령으로 비번 조회
-    kubectl -n argocd get secret argocd-initial-admin-secret \
-      -o jsonpath="{.data.password}" | base64 -d
+  로그인: root / soldesk1.
+  (기본 admin 계정 비활성화됨 — root 계정으로만 로그인)
 
 [C] Grafana (메트릭 + 로그)
   마지막 출력 "Grafana:" URL 접속 (끝에 /grafana 붙어있음)
@@ -431,6 +441,48 @@ Gemini 가 이분 탐색으로 장애 직전 최대 부하 임계값을 자동 �
     python3 scripts/find_threshold.py --mode keda --dry-run
 
   → 결과: scripts/data/threshold-<mode>-<ts>.json
+
+──────────────────────────────────────────────────────────
+[G-2-4] 티켓팅 오픈 사전 스케일링
+──────────────────────────────────────────────────────────
+이벤트 오픈 N분 전에 Gemini가 예상 접속자 수를 분석해 미리 Pod를 증설합니다.
+
+    source .env.local
+
+    # 12:00 오픈, 5000명 예상 — 검토용 (실제 적용 안 함)
+    python3 scripts/pre_scale.py \
+      --event-time 12:00 \
+      --event-name "콘서트 7회차" \
+      --expected-users 5000
+
+    # --auto 추가 시 실제 적용 (10분 전 자동 증설 + 30분 후 자동 복구)
+    python3 scripts/pre_scale.py \
+      --event-time 12:00 \
+      --event-name "콘서트 7회차" \
+      --expected-users 5000 \
+      --auto
+
+  → 결과: scripts/data/pre-scale-<ts>.json
+
+──────────────────────────────────────────────────────────
+[G-2-5] 실시간 예측 기반 모니터링 + 자동 스케일링
+──────────────────────────────────────────────────────────
+SQS·RDS·HPA·KEDA·Node·Pod 메트릭을 수집하고 증가 속도를 분석해
+임계 도달 30초 전에 자동으로 maxReplicas를 조정합니다.
+
+    source .env.local
+
+    # 모니터링만 (read-only)
+    python3 scripts/realtime_monitor.py
+
+    # 자동 스케일링 포함
+    python3 scripts/realtime_monitor.py --auto
+
+    # 1회 출력 후 종료
+    python3 scripts/realtime_monitor.py --once
+
+    # 파일로 저장 (scripts/data/monitor-latest.txt)
+    python3 scripts/realtime_monitor.py --file
 
 
 ==========================================================
