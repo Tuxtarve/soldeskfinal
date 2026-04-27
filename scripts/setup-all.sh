@@ -69,19 +69,23 @@ ensure_helm() {
       cp "$TMP_DIR/windows-amd64/helm.exe" "$HOME/bin/helm.exe"
       ;;
     Linux)
-      local TAR_NAME="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+      local HELM_ARCH="amd64"
+      [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]] && HELM_ARCH="arm64"
+      local TAR_NAME="helm-${HELM_VERSION}-linux-${HELM_ARCH}.tar.gz"
       curl -fsSL "https://get.helm.sh/${TAR_NAME}" -o "$TMP_DIR/helm.tgz" \
         || { echo "ERROR: helm 다운로드 실패"; rm -rf "$TMP_DIR"; return 1; }
       tar xzf "$TMP_DIR/helm.tgz" -C "$TMP_DIR"
-      cp "$TMP_DIR/linux-amd64/helm" "$HOME/bin/helm"
+      cp "$TMP_DIR/linux-${HELM_ARCH}/helm" "$HOME/bin/helm"
       chmod +x "$HOME/bin/helm"
       ;;
     Darwin)
-      local TAR_NAME="helm-${HELM_VERSION}-darwin-amd64.tar.gz"
+      local HELM_ARCH="amd64"
+      [[ "$(uname -m)" == "arm64" ]] && HELM_ARCH="arm64"
+      local TAR_NAME="helm-${HELM_VERSION}-darwin-${HELM_ARCH}.tar.gz"
       curl -fsSL "https://get.helm.sh/${TAR_NAME}" -o "$TMP_DIR/helm.tgz" \
         || { echo "ERROR: helm 다운로드 실패"; rm -rf "$TMP_DIR"; return 1; }
       tar xzf "$TMP_DIR/helm.tgz" -C "$TMP_DIR"
-      cp "$TMP_DIR/darwin-amd64/helm" "$HOME/bin/helm"
+      cp "$TMP_DIR/darwin-${HELM_ARCH}/helm" "$HOME/bin/helm"
       chmod +x "$HOME/bin/helm"
       ;;
     *)
@@ -110,54 +114,89 @@ ensure_helm() {
 
 ensure_helm
 
-# ── 0.2. kubectl 자동 설치 (EKS 1.30 호환 kubectl v1.30.0) ──
-# helm은 내부 k8s 클라이언트를 써서 kubectl 없이도 돌지만,
-# apply-ticketing-k8s.sh · DB 스키마 초기화 · rollout · ingress 조회 등에서 kubectl 필수.
+# ── 0.2. kubectl 자동 설치 + 아키텍처 검증 ──
+# 바이너리가 있어도 OS/아키텍처 불일치 시 "Exec format error" 발생.
+# (예: macOS Mach-O 바이너리가 Linux aarch64 머신에 남아있는 경우)
+# → 설치 여부뿐 아니라 실제 실행 가능 여부까지 검증 후 필요 시 교체.
 ensure_kubectl() {
-  if command -v kubectl >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ -x "$HOME/bin/kubectl" || -x "$HOME/bin/kubectl.exe" ]]; then
-    export PATH="$HOME/bin:$PATH"
-    command -v kubectl >/dev/null 2>&1 && { echo "kubectl 기존 설치 발견 (PATH 갱신)"; return 0; }
-  fi
-
-  echo "kubectl 미설치 → 자동 설치 시작"
-  mkdir -p "$HOME/bin"
-  local KUBECTL_VERSION="v1.30.0"
-  local UNAME
+  local UNAME ARCH KUBE_OS KUBE_ARCH
   UNAME="$(uname -s 2>/dev/null || echo unknown)"
+  ARCH="$(uname -m 2>/dev/null || echo unknown)"
 
+  # OS 감지
   case "$UNAME" in
-    MINGW*|MSYS*|CYGWIN*)
-      curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/windows/amd64/kubectl.exe" \
-        -o "$HOME/bin/kubectl.exe" \
-        || { echo "ERROR: kubectl 다운로드 실패"; return 1; }
-      ;;
-    Linux)
-      curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
-        -o "$HOME/bin/kubectl" \
-        || { echo "ERROR: kubectl 다운로드 실패"; return 1; }
-      chmod +x "$HOME/bin/kubectl"
-      ;;
-    Darwin)
-      curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/darwin/amd64/kubectl" \
-        -o "$HOME/bin/kubectl" \
-        || { echo "ERROR: kubectl 다운로드 실패"; return 1; }
-      chmod +x "$HOME/bin/kubectl"
-      ;;
+    Linux)           KUBE_OS="linux"   ;;
+    Darwin)          KUBE_OS="darwin"  ;;
+    MINGW*|MSYS*|CYGWIN*) KUBE_OS="windows" ;;
     *)
       echo "ERROR: 미지원 OS ($UNAME). kubectl 수동 설치 후 재시도." >&2
-      return 1
-      ;;
+      return 1 ;;
   esac
 
+  # CPU 아키텍처 감지 (arm64/amd64)
+  case "$ARCH" in
+    x86_64|amd64)    KUBE_ARCH="amd64" ;;
+    aarch64|arm64)   KUBE_ARCH="arm64" ;;
+    *)
+      echo "ERROR: 미지원 아키텍처 ($ARCH). kubectl 수동 설치 후 재시도." >&2
+      return 1 ;;
+  esac
+
+  # Windows는 항상 amd64
+  [[ "$KUBE_OS" == "windows" ]] && KUBE_ARCH="amd64"
+
+  # 기존 kubectl 실행 가능 여부 검증 (존재해도 Exec format error 날 수 있음)
+  if command -v kubectl >/dev/null 2>&1; then
+    if kubectl version --client >/dev/null 2>&1; then
+      echo "kubectl 정상 확인 ($(kubectl version --client --short 2>/dev/null || kubectl version --client | head -1))"
+      return 0
+    else
+      echo "kubectl 실행 불가 (아키텍처 불일치 의심) → 올바른 버전으로 교체"
+    fi
+  fi
+
+  # HOME/bin 에서도 확인
+  if [[ -x "$HOME/bin/kubectl" ]]; then
+    export PATH="$HOME/bin:$PATH"
+    if kubectl version --client >/dev/null 2>&1; then
+      echo "kubectl 기존 설치 발견 (PATH 갱신)"
+      return 0
+    fi
+  fi
+
+  echo "kubectl 설치/교체 시작 → OS=${KUBE_OS} ARCH=${KUBE_ARCH}"
+  mkdir -p "$HOME/bin"
+
+  local KUBECTL_VERSION
+  KUBECTL_VERSION="$(curl -s https://dl.k8s.io/release/stable.txt 2>/dev/null || echo "v1.30.0")"
+
+  local KUBECTL_URL
+  if [[ "$KUBE_OS" == "windows" ]]; then
+    KUBECTL_URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/windows/amd64/kubectl.exe"
+    curl -fsSL "$KUBECTL_URL" -o "$HOME/bin/kubectl.exe" \
+      || { echo "ERROR: kubectl 다운로드 실패"; return 1; }
+  else
+    KUBECTL_URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${KUBE_OS}/${KUBE_ARCH}/kubectl"
+    curl -fsSL "$KUBECTL_URL" -o "$HOME/bin/kubectl" \
+      || { echo "ERROR: kubectl 다운로드 실패"; return 1; }
+    chmod +x "$HOME/bin/kubectl"
+
+    # /usr/local/bin 에 이미 잘못된 바이너리가 있으면 HOME/bin 이 우선되도록 PATH 앞에 삽입
+    export PATH="$HOME/bin:$PATH"
+
+    # /usr/local/bin/kubectl 도 교체 시도 (권한 있으면)
+    if [[ -w /usr/local/bin ]]; then
+      cp "$HOME/bin/kubectl" /usr/local/bin/kubectl
+      echo "  → /usr/local/bin/kubectl 도 교체 완료"
+    fi
+  fi
+
   export PATH="$HOME/bin:$PATH"
-  if ! command -v kubectl >/dev/null 2>&1; then
-    echo "ERROR: kubectl 자동 설치 실패" >&2
+  if ! kubectl version --client >/dev/null 2>&1; then
+    echo "ERROR: kubectl 설치 후에도 실행 불가" >&2
     return 1
   fi
-  echo "kubectl 설치 완료 → $HOME/bin"
+  echo "kubectl 설치 완료: $(kubectl version --client --short 2>/dev/null || echo OK) → ${KUBE_OS}/${KUBE_ARCH}"
 }
 
 ensure_kubectl
