@@ -62,3 +62,7 @@ aws --version*
 # 팀원마다 repoURL(github_repo) 이 달라야 하므로 git 에 커밋하지 않는다.
 argocd/application.rendered.yaml
 kubectl
+
+# GCP WIF Credential Config — setup-gcp.sh 가 매번 새로 생성하므로 git 불필요.
+# 프로젝트 번호·서비스계정 등 인프라 정보 포함.
+k8s/ai-advisor/gcp-credential-config.json
