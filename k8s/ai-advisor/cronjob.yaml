@@ -11,8 +11,9 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      # 2분 내 완료 못 하면 중단 (Gemini 호출 포함 여유 있게)
-      activeDeadlineSeconds: 120
+      # WIF 인증(~30s) + 병렬 수집(~20s) + Gemini(~20s) + GCP 전송(~20s) = ~90s 예상
+      # 여유 2배 확보: 180s
+      activeDeadlineSeconds: 180
       template:
         spec:
           serviceAccountName: ai-advisor-sa   # IRSA → CloudWatch/SQS 접근

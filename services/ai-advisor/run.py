@@ -331,9 +331,15 @@ def _serialize(obj):
     return obj
 
 
-def _gcp_credentials():
-    """ADC 자동 탐색 대신 WIF config 파일을 명시적으로 로드.
-    환경변수 충돌(JSON 키 vs WIF) 방지."""
+_gcp_client_cache: "gcp_logging.Client | None" = None
+
+def _get_gcp_client() -> "gcp_logging.Client":
+    """WIF 인증 + GCP Logging 클라이언트를 프로세스 내 캐싱.
+    gcp_push 를 2회 호출해도 IMDS→STS→GCP 인증을 1회만 수행."""
+    global _gcp_client_cache
+    if _gcp_client_cache is not None:
+        return _gcp_client_cache
+
     import google.auth
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp/config.json")
     try:
@@ -341,15 +347,16 @@ def _gcp_credentials():
             cred_path,
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
-        return credentials
+        _gcp_client_cache = gcp_logging.Client(project=PROJECT_ID, credentials=credentials)
+        print("[*] GCP 클라이언트 초기화 완료 (WIF)", flush=True)
+        return _gcp_client_cache
     except Exception as e:
         print(f"[!] WIF 자격증명 로드 실패 ({cred_path}): {e}", flush=True)
         raise
 
 
 def gcp_push(log_name: str, payload: dict, severity: str) -> None:
-    credentials = _gcp_credentials()
-    client = gcp_logging.Client(project=PROJECT_ID, credentials=credentials)
+    client = _get_gcp_client()
     client.logger(log_name).log_struct(_serialize(payload), severity=severity)
     print(f"[+] GCP 전송 완료: {log_name} [{severity}]", flush=True)
 
@@ -496,12 +503,48 @@ def main() -> int:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"[*] AI Advisor CronJob 시작: {ts}", flush=True)
 
-    # ── 메트릭 수집 ──────────────────────────────────────────
-    print("[*] k8s 리소스 수집...", flush=True)
-    k8s_data   = collect_k8s(NS)
-    prometheus = collect_prometheus(NS)
-    sqs        = collect_sqs(QUEUE_NAME, REGION)
-    cw_rds, cw_redis = collect_cloudwatch(REGION)
+    # ── GCP 클라이언트 사전 초기화 (병렬 수집 중 WIF 인증 완료) ──
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=1) as _p:
+        _gcp_future = _p.submit(_get_gcp_client)
+
+    # ── 메트릭 수집 (병렬) ───────────────────────────────────
+    # k8s·Prometheus·SQS·CloudWatch 를 동시에 수집해 총 소요시간 단축
+    print("[*] 메트릭 병렬 수집 시작...", flush=True)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _collect_k8s_task():
+        return "k8s", collect_k8s(NS)
+
+    def _collect_prom_task():
+        return "prometheus", collect_prometheus(NS)
+
+    def _collect_sqs_task():
+        return "sqs", collect_sqs(QUEUE_NAME, REGION)
+
+    def _collect_cw_task():
+        return "cloudwatch", collect_cloudwatch(REGION)
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(_collect_k8s_task),
+            pool.submit(_collect_prom_task),
+            pool.submit(_collect_sqs_task),
+            pool.submit(_collect_cw_task),
+        ]
+        for f in as_completed(futures):
+            try:
+                key, val = f.result(timeout=30)
+                results[key] = val
+            except Exception as ex:
+                print(f"[!] 수집 실패: {ex}", flush=True)
+
+    k8s_data         = results.get("k8s", {})
+    prometheus       = results.get("prometheus", {})
+    sqs              = results.get("sqs", {})
+    cw_rds, cw_redis = results.get("cloudwatch", ({}, {}))
+    print("[*] 메트릭 수집 완료", flush=True)
 
     metrics = {
         "timestamp":      ts,
