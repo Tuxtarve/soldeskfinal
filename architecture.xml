@@ -1,0 +1,43 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Ticketing AI Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="client" value="사용자" style="ellipse;fillColor=#dae8fc;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="api" value="API Gateway" style="rounded=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="380" y="120" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="read" value="read-api (HPA)" style="rounded=1;fillColor=#fff2cc;" vertex="1" parent="1">
+          <mxGeometry x="200" y="220" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="write" value="write-api (HPA)" style="rounded=1;fillColor=#fff2cc;" vertex="1" parent="1">
+          <mxGeometry x="600" y="220" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="redis" value="Redis (ElastiCache)" style="rounded=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="200" y="320" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sqs" value="SQS FIFO" style="rounded=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="600" y="320" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="worker" value="worker-svc (KEDA)" style="rounded=1;fillColor=#ffe6cc;" vertex="1" parent="1">
+          <mxGeometry x="600" y="420" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rds" value="RDS" style="rounded=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="600" y="520" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
