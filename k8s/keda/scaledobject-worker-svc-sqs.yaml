@@ -4,7 +4,8 @@ metadata:
   name: worker-svc-sqs
   labels:
     app: worker-svc
-  annotations: {}
+  annotations:
+    autoscaling.keda.sh/paused: "false"
 spec:
   scaleTargetRef:
     name: worker-svc-burst
