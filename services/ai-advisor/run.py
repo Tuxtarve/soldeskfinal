@@ -331,8 +331,25 @@ def _serialize(obj):
     return obj
 
 
+def _gcp_credentials():
+    """ADC 자동 탐색 대신 WIF config 파일을 명시적으로 로드.
+    환경변수 충돌(JSON 키 vs WIF) 방지."""
+    import google.auth
+    cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp/config.json")
+    try:
+        credentials, _ = google.auth.load_credentials_from_file(
+            cred_path,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        return credentials
+    except Exception as e:
+        print(f"[!] WIF 자격증명 로드 실패 ({cred_path}): {e}", flush=True)
+        raise
+
+
 def gcp_push(log_name: str, payload: dict, severity: str) -> None:
-    client = gcp_logging.Client(project=PROJECT_ID)
+    credentials = _gcp_credentials()
+    client = gcp_logging.Client(project=PROJECT_ID, credentials=credentials)
     client.logger(log_name).log_struct(_serialize(payload), severity=severity)
     print(f"[+] GCP 전송 완료: {log_name} [{severity}]", flush=True)
 

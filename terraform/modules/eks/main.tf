@@ -226,6 +226,26 @@ resource "null_resource" "pod_eni_configs" {
 }
 
 # 워커 노드 그룹 — CA scale-up 한도는 scaling_config.max_size (AWS ASG). 태그 없으면 CA가 ASG를 못 찾음.
+# IMDS hop limit=2 영구 고정 Launch Template
+# CA가 노드를 새로 띄울 때마다 기본값(1)으로 리셋되는 문제 방지.
+# GCP WIF 인증이 EKS Pod → IMDS → AWS 자격증명 교환을 사용하므로 필수.
+resource "aws_launch_template" "app_nodes" {
+  name_prefix = "${local.name_prefix}-app-"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_put_response_hop_limit = 2   # Pod에서 IMDS 접근 허용 (기본 1은 노드만 허용)
+    http_tokens                 = "required"  # IMDSv2 강제
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${local.name_prefix}-app-node"
+    }
+  }
+}
+
 resource "aws_eks_node_group" "app" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${local.name_prefix}-app-nodes"
@@ -233,6 +253,11 @@ resource "aws_eks_node_group" "app" {
   subnet_ids      = var.subnet_ids
   instance_types  = var.app_node_instance_types
   ami_type        = "AL2023_x86_64_STANDARD"
+
+  launch_template {
+    id      = aws_launch_template.app_nodes.id
+    version = aws_launch_template.app_nodes.latest_version
+  }
 
   scaling_config {
     desired_size = var.app_node_desired_size
