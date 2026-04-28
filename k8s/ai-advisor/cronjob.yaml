@@ -4,37 +4,39 @@ metadata:
   name: ai-advisor
   namespace: ticketing
 spec:
-  # 10분마다 실행 (부하 테스트 중에는 5분으로 줄여도 됨)
   schedule: "*/10 * * * *"
-  concurrencyPolicy: Forbid        # 이전 실행이 끝나지 않으면 건너뜀
+
+  # 이전 Job이 끝나지 않으면 다음 실행 금지
+  concurrencyPolicy: Forbid
+
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
+
   jobTemplate:
     spec:
-      # WIF 인증(~30s) + 병렬 수집(~20s) + Gemini(~20s) + GCP 전송(~20s) = ~90s 예상
-      # 여유 2배 확보: 180s
-      activeDeadlineSeconds: 180
+      # ❗ 실행시간 부족 해결 (기존 180 → 900)
+      activeDeadlineSeconds: 900
+      backoffLimit: 1
+
       template:
         spec:
-          serviceAccountName: ai-advisor-sa   # IRSA → CloudWatch/SQS 접근
+          serviceAccountName: ai-advisor-sa
           restartPolicy: OnFailure
 
           containers:
             - name: ai-advisor
-              # prepare.sh / setup-all.sh 가 ECR URI 를 주입 (실제 배포 시)
-              # 로컬 테스트: docker build -t ai-advisor:latest -f services/ai-advisor/Dockerfile .
               image: 032098305878.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor:latest
               imagePullPolicy: Always
 
               env:
-                # Gemini API 키 — kubectl create secret 으로 생성
+                # Gemini API 키
                 - name: GEMINI_API_KEY
                   valueFrom:
                     secretKeyRef:
                       name: ai-advisor-secrets
                       key: GEMINI_API_KEY
 
-                # Slack 알림 (선택)
+                # Slack (선택)
                 - name: SLACK_WEBHOOK_URL
                   valueFrom:
                     secretKeyRef:
@@ -42,9 +44,8 @@ spec:
                       key: SLACK_WEBHOOK_URL
                       optional: true
 
-                # GCP Workload Identity Federation 인증
-                - name: GOOGLE_APPLICATION_CREDENTIALS
-                  value: /etc/gcp/config.json
+                # ❗ WIF 사용 → JSON 인증 제거
+                # (GOOGLE_APPLICATION_CREDENTIALS 삭제됨)
 
                 # GCP 설정
                 - name: GCP_PROJECT_ID
@@ -54,15 +55,11 @@ spec:
                 - name: AWS_REGION
                   value: "ap-northeast-2"
 
-                # Prometheus 서비스 DNS (클러스터 내부 직접 접근)
+                # Prometheus 내부 접근
                 - name: PROMETHEUS_URL
                   value: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
 
-              volumeMounts:
-                - name: gcp-creds
-                  mountPath: /etc/gcp
-                  readOnly: true
-
+              
               resources:
                 requests:
                   cpu: "100m"
@@ -71,7 +68,4 @@ spec:
                   cpu: "500m"
                   memory: "512Mi"
 
-          volumes:
-            - name: gcp-creds
-              configMap:
-                name: gcp-credential-config
+          

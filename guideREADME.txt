@@ -403,9 +403,14 @@ Gemini API 키 발급: https://aistudio.google.com → "Get API key"
 ──────────────────────────────────────────────────────────
 [G-2-2] Gemini 추천 패치 적용 순서
 ──────────────────────────────────────────────────────────
+STEP 0 - 최신 patches 디렉토리 자동 찾기 <ts>의 값 찾기
+    echo $LATEST
+
+
 STEP 1 — 서버 검증
     kubectl apply -n ticketing --dry-run=server \
       -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+
 
 STEP 2 — diff 확인 ⭐ 강추
     kubectl diff -n ticketing \

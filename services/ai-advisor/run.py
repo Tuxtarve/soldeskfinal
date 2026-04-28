@@ -429,6 +429,7 @@ RESPONSE_SCHEMA = {
 
 def call_gemini(metrics: dict, api_key: str) -> dict:
     context_md = CONTEXT_FILE.read_text(encoding="utf-8")
+
     prompt = (
         f"{context_md}\n\n---\n\n"
         f"## L. 현재 메트릭 스냅샷 (DYNAMIC)\n\n"
@@ -439,17 +440,39 @@ def call_gemini(metrics: dict, api_key: str) -> dict:
         f"- 빈 배열/객체 필드는 수집 실패로 간주하고 해당 항목 추천에서 제외하라.\n"
         f"- `from`/`to` 는 문자열로 표기."
     )
+
     client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=RESPONSE_SCHEMA,
-            temperature=0.2,
-        ),
-    )
-    return json.loads(resp.text)
+
+    # 🔥 retry 로직
+    for i in range(3):
+        try:
+            resp = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=RESPONSE_SCHEMA,
+                    temperature=0.2,
+                ),
+            )
+
+            return json.loads(resp.text)
+
+        except Exception as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                print(f"[WARN] Gemini 503 retry {i+1}/3", flush=True)
+                time.sleep(5 * (i + 1))
+            else:
+                # 다른 에러는 그대로 터뜨림
+                raise
+
+    # 🔥 최종 fallback (이게 핵심)
+    print("[WARN] Gemini 전체 실패 → 빈 결과 반환", flush=True)
+
+    return {
+        "summary": "Gemini unavailable",
+        "recommendations": []
+    }
 
 
 # ============================================================
