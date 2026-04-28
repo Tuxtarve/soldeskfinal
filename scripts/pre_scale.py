@@ -144,10 +144,46 @@ GEMINI_SCHEMA = {
 }
 
 
+def _load_thresholds() -> dict:
+    """이분탐색으로 측정한 실측 임계값 로드."""
+    import glob
+    thresholds = {}
+    for mode in ["keda", "hpa-read", "hpa-write"]:
+        files = sorted(glob.glob(str(ROOT / "scripts" / "data" / f"threshold-{mode}-*.json")))
+        if files:
+            try:
+                d = json.loads(Path(files[-1]).read_text())
+                thresholds[mode] = {
+                    "safe_max": d.get("threshold_estimate"),
+                    "unit": d.get("unit", ""),
+                    "file": Path(files[-1]).name,
+                }
+            except Exception:
+                pass
+    return thresholds
+
+
+def _fmt_thresholds(t: dict) -> str:
+    if not t:
+        return "  (아직 이분탐색 미실행 — find_threshold.py 실행 후 정확도 향상)"
+    lines = []
+    mapping = {
+        "keda":      "KEDA worker-svc 안전 최대 SQS",
+        "hpa-read":  "read-api HPA 안전 최대",
+        "hpa-write": "write-api HPA 안전 최대",
+    }
+    for mode, label in mapping.items():
+        if mode in t:
+            d = t[mode]
+            lines.append(f"  {label}: {d['safe_max']} {d['unit']}  (측정파일: {d['file']})")
+    return "\n".join(lines) if lines else "  (측정값 없음)"
+
+
 def ask_gemini(api_key: str, event_name: str, expected_users: int,
                state: dict) -> dict:
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
     client = genai.Client(api_key=api_key)
+    thresholds = _load_thresholds()
 
     prompt = f"""당신은 Kubernetes 오토스케일링 전문가입니다.
 티켓팅 오픈 직전 사전 스케일링 값을 추천해주세요.
@@ -172,6 +208,9 @@ def ask_gemini(api_key: str, event_name: str, expected_users: int,
 HPA: {json.dumps(state['hpa'], ensure_ascii=False)}
 KEDA: {json.dumps(state['keda'], ensure_ascii=False)}
 
+## 실측 임계값 (find_threshold.py 이분탐색 결과 — 이 수치를 최우선으로 사용)
+{_fmt_thresholds(thresholds)}
+
 ## 부하 예측
 - 예상 사용자 {expected_users:,}명 동시 접속
 - 오픈 순간 write RPS ≈ {min(expected_users // 10, 500)}
@@ -180,6 +219,8 @@ KEDA: {json.dumps(state['keda'], ensure_ascii=False)}
 
 ## 요청
 오픈 직전에 미리 설정할 값을 추천하세요.
+- 실측 임계값을 절대 초과하지 않는 min_replicas/max_replicas 추천
+- 실측 임계값 초과가 예상되면 warnings 에 명시
 - RDS 커넥션 한계(180) 초과하지 않도록 worker + write-api replicas 합산 고려
 - min_replicas 는 워밍업용 (오픈 전 준비), max 는 피크 대응용
 - down_replicas 는 오픈 30분 후 복구할 값 (평시 기준)

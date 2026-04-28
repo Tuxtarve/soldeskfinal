@@ -14,7 +14,9 @@ spec:
   cooldownPeriod: 180
   # t3.small: stable 1대 + burst 최대 5대 = 합계 6대
   minReplicaCount: 0
-  maxReplicaCount: 5
+  # write-api 102 RPS ÷ pod당 5 msg/s = 20대 + 버퍼 3 = 23
+  # RDS 커넥션: 180 - write-api 5대 × pool5 = 155 → worker 31대까지 안전
+  maxReplicaCount: 23
   advanced:
     horizontalPodAutoscalerConfig:
       behavior:
@@ -39,6 +41,8 @@ spec:
         # scale target(worker-svc)의 env로부터 큐 URL을 읽음(환경별/계정별 URL 차이를 안전하게 흡수)
         queueURLFromEnv: SQS_QUEUE_URL
         # 1메시지부터 즉시 확장(데모/버스트에서 반응성 극대화)
-        queueLength: "1"
+        # 소량(1~4개) 메시지에 즉시 Pod 생성하는 과도 scale-up 방지
+        # 5개 이상 쌓이면 스케일 시작 (이분탐색 결과 1938 / 23pod = 84 기준 완화)
+        queueLength: "5"
         activationQueueLength: "0"
         scaleOnInFlight: "true"

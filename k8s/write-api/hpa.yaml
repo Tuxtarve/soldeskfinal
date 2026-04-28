@@ -8,9 +8,11 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: write-api-burst
-  # t3.small: stable 1대 + burst 최대 3대 = 합계 4대
+  # find_threshold 실측 결과: write-api 안전 최대 102.5 RPS
+  # pod당 처리량 ~20 RPS → 102 / 20 = 5대 필요 + 버퍼 5 = 10대
+  # stable 1대 + burst 최대 9대 = 합계 10대
   minReplicas: 1
-  maxReplicas: 3
+  maxReplicas: 10
   metrics:
     - type: Resource
       resource:
