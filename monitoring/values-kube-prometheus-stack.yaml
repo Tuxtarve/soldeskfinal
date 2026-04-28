@@ -7,7 +7,11 @@
 prometheus:
   prometheusSpec:
     priorityClassName: ticketing-priority-platform
-    retention: 15d
+    # t3.small 경량화: 15d→5d 로 TSDB 크기·메모리 대폭 절감
+    retention: 5d
+    # 30s 스크레이프로 샘플 수 절반 감소 → 메모리·CPU 추가 절감
+    scrapeInterval: 30s
+    scrapeTimeout: 25s
     storageSpec:
       volumeClaimTemplate:
         spec:
@@ -15,15 +19,15 @@ prometheus:
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
-              storage: 20Gi
-    # CPU 실사용 ~35m — requests 를 절반으로 축소해 노드 여유 확보. limits/retention/mem 유지.
+              storage: 10Gi
+    # 실사용 494Mi(retention 15d 기준) → 5d + 30s 간격 적용 시 ~280Mi 예상
     resources:
       requests:
-        cpu: 100m
-        memory: 400Mi
+        cpu: 80m
+        memory: 256Mi
       limits:
-        cpu: 500m
-        memory: 768Mi
+        cpu: 400m
+        memory: 512Mi
 
     # EKS service scrape configs (app endpoints in ticketing namespace)
     additionalScrapeConfigs:
@@ -92,14 +96,15 @@ grafana:
     enabled: true
     storageClassName: gp3
     size: 5Gi
-  # 실사용 12m/274Mi — CPU req 절반, mem req 는 실사용 반영해 올림. mem limit 을 400 으로 올려 OOM 방지.
+  # 실사용 463Mi(limit 미설정으로 누수) → limit 200Mi 고정으로 절감
+  # Grafana 자체는 100~150Mi 면 충분, 대시보드 캐시 포함 200Mi 여유
   resources:
     requests:
       cpu: 50m
-      memory: 256Mi
+      memory: 128Mi
     limits:
       cpu: 200m
-      memory: 400Mi
+      memory: 200Mi
   service:
     type: ClusterIP
 

@@ -20,19 +20,19 @@ loki:
           prefix: index_
           period: 24h
   limits_config:
-    retention_period: 168h          # 7 days
+    retention_period: 72h           # 3 days (t3.small 경량화)
 
 singleBinary:
   priorityClassName: ticketing-priority-platform
   replicas: 1
-  # 실사용 7m/172Mi — CPU req 절반, mem req 실사용 반영 상향. mem limit 384 로 올려 여유.
+  # 실사용 157Mi → limit 200Mi 로 제한, 3일 retention 으로 추가 절감
   resources:
     requests:
-      cpu: 50m
-      memory: 256Mi
+      cpu: 30m
+      memory: 128Mi
     limits:
-      cpu: 200m
-      memory: 384Mi
+      cpu: 150m
+      memory: 200Mi
   persistence:
     enabled: true
     storageClass: gp3
