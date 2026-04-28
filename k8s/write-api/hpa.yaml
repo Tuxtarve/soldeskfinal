@@ -8,10 +8,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: write-api-burst
-  # stable write-api 1대는 HPA 밖. burst 만 1~23.
-  # 이 클러스터는 Resource metric(HPA)로 scale-to-zero(min=0)를 허용하지 않음.
+  # t3.small: stable 1대 + burst 최대 3대 = 합계 4대
   minReplicas: 1
-  maxReplicas: 23
+  maxReplicas: 3
   metrics:
     - type: Resource
       resource:
@@ -33,7 +32,7 @@ spec:
           value: 100
           periodSeconds: 15
         - type: Pods
-          value: 8
+          value: 2
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:

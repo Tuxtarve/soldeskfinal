@@ -49,14 +49,14 @@ spec:
             # 콘서트 FIFO 샤딩(회차 내부 병렬성). configmap 기본값을 명시적으로 고정해 데모/운영 일관성 확보.
             - name: CONCERT_FIFO_SHARDS
               value: "64"
-          # Burstable 상위: requests 를 burst(256Mi/150m)보다 상향. eviction 시 burst 가 먼저.
+          # t3.small: requests를 burst(128Mi/100m)보다 상향해 eviction 우선순위 유지.
           resources:
             requests:
-              memory: "500Mi"
-              cpu: "300m"
+              memory: "200Mi"
+              cpu: "150m"
             limits:
-              memory: "768Mi"
-              cpu: "1000m"
+              memory: "300Mi"
+              cpu: "500m"
           # 기동 시 remain_count 동기화(wait+update)가 붙을 수 있으므로, liveness/readiness보다 먼저 startupProbe로 보호
           startupProbe:
             httpGet:

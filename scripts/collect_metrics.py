@@ -28,6 +28,17 @@ except ImportError:
     sys.stderr.write("pip install boto3 requests 필요\n")
     sys.exit(2)
 
+def _get_aws_region() -> str:
+    try:
+        result = subprocess.run(
+            ["aws", "configure", "get", "region"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() or "ap-northeast-2"
+    except Exception:
+        return "ap-northeast-2"
+
+
 # ---------- 설정 ----------
 NS = os.environ.get("NS", "ticketing")
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "ticketing-reservation.fifo")
@@ -42,17 +53,6 @@ REDIS_GROUP_ID  = "ticketing-redis"
 
 ROOT     = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-
-
-def _get_aws_region() -> str:
-    try:
-        result = subprocess.run(
-            ["aws", "configure", "get", "region"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return result.stdout.strip() or "ap-northeast-2"
-    except Exception:
-        return "ap-northeast-2"
 
 
 # ---------- kubectl 헬퍼 ----------

@@ -8,11 +8,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: read-api-burst
-  # stable read-api 1대는 HPA 밖. burst 만 1~23 (합계 최대 24).
-  # maxReplicas 만큼 Running 하려면 노드·allocatable 이 따라와야 함 — eks_app_node_max_size·파드 requests 와 정합.
-  # 이 클러스터는 Resource metric(HPA)로 scale-to-zero(min=0)를 허용하지 않음.
+  # t3.small: stable 1대 + burst 최대 3대 = 합계 4대
   minReplicas: 1
-  maxReplicas: 23
+  maxReplicas: 3
   metrics:
     - type: Resource
       resource:
@@ -34,7 +32,7 @@ spec:
           value: 100
           periodSeconds: 15
         - type: Pods
-          value: 6
+          value: 2
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:

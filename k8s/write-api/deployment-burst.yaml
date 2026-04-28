@@ -53,11 +53,11 @@ spec:
               value: "64"
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "150m"
+              memory: "128Mi"
+              cpu: "100m"
             limits:
-              memory: "768Mi"
-              cpu: "1000m"
+              memory: "256Mi"
+              cpu: "500m"
           startupProbe:
             httpGet:
               path: /api/write/health
