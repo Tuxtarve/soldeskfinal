@@ -342,6 +342,16 @@ Gemini API 키 발급: https://aistudio.google.com → "Get API key"
   ※ DB_PASSWORD 는 prepare.sh 실행 시 입력한 값과 동일
   ※ gemini-1.5-flash / gemini-2.0-flash 는 지원 종료 — 사용 불가
 
+
+Python 가상환경 생성 및 패키지 설치
+python3 -m venv venv
+source venv/bin/activate
+pip install google-genai
+
+설치 확인:
+
+pip list | grep genai
+
 연결 확인:
     source .env.local && python3 scripts/gemini_ping.py
     # OK 나오면 정상
@@ -404,22 +414,21 @@ Gemini API 키 발급: https://aistudio.google.com → "Get API key"
 [G-2-2] Gemini 추천 패치 적용 순서
 ──────────────────────────────────────────────────────────
 STEP 0 - 최신 patches 디렉토리 자동 찾기 <ts>의 값 찾기
+    export LATEST=$(ls -d scripts/data/patches-* | sort | tail -n 1)
     echo $LATEST
 
 
+
 STEP 1 — 서버 검증
-    kubectl apply -n ticketing --dry-run=server \
-      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+    kubectl apply --dry-run=server -n ticketing -f $LATEST/
 
 
 STEP 2 — diff 확인 ⭐ 강추
-    kubectl diff -n ticketing \
-      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+    kubectl diff -n ticketing -f $LATEST/
   → "-" 현재값, "+" 변경될 값 확인
 
 STEP 3 — 실제 적용
-    kubectl apply -n ticketing \
-      -f scripts/data/patches-<ts>/00-hpa-read-api-hpa.yaml
+    kubectl apply -n ticketing -f $LATEST/
 
 STEP 4 — 결과 확인
     kubectl get hpa -n ticketing

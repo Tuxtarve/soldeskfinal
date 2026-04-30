@@ -1,0 +1,231 @@
+alertmanager:
+  alertmanagerSpec:
+    priorityClassName: ticketing-priority-platform
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+      requests:
+        cpu: 50m
+        memory: 32Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+          storageClassName: gp3
+  config:
+    global:
+      resolve_timeout: 5m
+    inhibit_rules:
+    - equal:
+      - alertname
+      source_match:
+        severity: critical
+      target_match:
+        severity: warning
+    receivers:
+    - name: slack
+      slack_configs:
+      - api_url: SLACK_WEBHOOK_PLACEHOLDER
+        channel: '#alerts'
+        send_resolved: true
+        text: '{{ range .Alerts }} *severity*: {{ .Labels.severity }} *summary*: {{
+          .Annotations.summary }} *starts*: {{ .StartsAt.Format "2006-01-02 15:04:05"
+          }} --- {{ end }}'
+        title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+    route:
+      group_by:
+      - alertname
+      - severity
+      group_interval: 5m
+      group_wait: 10s
+      receiver: slack
+      repeat_interval: 1h
+      routes:
+      - match:
+          severity: critical
+        receiver: slack
+        repeat_interval: 15m
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+grafana:
+  additionalDataSources:
+  - access: proxy
+    editable: false
+    name: Loki
+    type: loki
+    uid: loki
+    url: http://loki.monitoring.svc.cluster.local:3100
+  adminPassword: soldesk1.
+  adminUser: root
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - disableDeletion: false
+        editable: true
+        folder: ""
+        name: default
+        options:
+          path: /var/lib/grafana/dashboards/default
+        orgId: 1
+        type: file
+  defaultDashboardsTimezone: Asia/Seoul
+  deploymentStrategy:
+    type: Recreate
+  env:
+    TZ: Asia/Seoul
+  grafana.ini:
+    date_formats:
+      default_timezone: Asia/Seoul
+    server:
+      root_url: '%(protocol)s://%(domain)s/grafana'
+      serve_from_sub_path: true
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: gp3
+  priorityClassName: ticketing-priority-platform
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  readinessProbe:
+    initialDelaySeconds: 60
+    timeoutSeconds: 5
+    periodSeconds: 10
+    failureThreshold: 10
+
+  service:
+    type: ClusterIP
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: monitoring
+kube-state-metrics:
+  priorityClassName: ticketing-priority-platform
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 20m
+      memory: 48Mi
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeStateMetrics:
+  enabled: true
+nodeExporter:
+  enabled: true
+prometheus:
+  prometheusSpec:
+    additionalScrapeConfigs:
+    - job_name: read-api
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - ticketing
+        role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: read-api
+        source_labels:
+        - __meta_kubernetes_service_name
+      - action: keep
+        regex: metrics
+        source_labels:
+        - __meta_kubernetes_endpoint_port_name
+    - job_name: write-api
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - ticketing
+        role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: write-api
+        source_labels:
+        - __meta_kubernetes_service_name
+      - action: keep
+        regex: metrics
+        source_labels:
+        - __meta_kubernetes_endpoint_port_name
+    - job_name: worker-svc
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - ticketing
+        role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: worker-svc
+        source_labels:
+        - __meta_kubernetes_service_name
+      - action: keep
+        regex: metrics
+        source_labels:
+        - __meta_kubernetes_endpoint_port_name
+    - job_name: cloudwatch-exporter
+      scrape_interval: 60s
+      static_configs:
+      - targets:
+        - cloudwatch-exporter:9106
+    - job_name: redis-exporter
+      static_configs:
+      - targets:
+        - redis-exporter:9121
+    priorityClassName: ticketing-priority-platform
+    resources:
+      limits:
+        cpu: 400m
+        memory: 512Mi
+      requests:
+        cpu: 80m
+        memory: 256Mi
+    retention: 5d
+    scrapeInterval: 30s
+    scrapeTimeout: 25s
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          storageClassName: gp3
+prometheus-node-exporter:
+  priorityClassName: ticketing-priority-platform
+  resources:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 32Mi
+prometheusOperator:
+  priorityClassName: ticketing-priority-platform
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 20m
+      memory: 48Mi

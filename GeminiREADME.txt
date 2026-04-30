@@ -21,14 +21,14 @@ EKS 메트릭을 10분마다 자동 수집해 Gemini AI가 오토스케일링을
 프로젝트: soldesk-gcp
 
 ──────────────────────────────────────────────────────────
+[1-A-1] Gemini 기반 EKS 오토스케일/튜닝 추천 내용
+──────────────────────────────────────────────────────────
+cat recommend_scaling.py
+
+──────────────────────────────────────────────────────────
 [1-A] Gemini 추천 결과 조회
 ──────────────────────────────────────────────────────────
-    logName="projects/soldesk-gcp/logs/gemini-recommendations"
-
-    # 우선순위 높은 것만
-    logName="projects/soldesk-gcp/logs/gemini-recommendations"
-    jsonPayload.priority="now"
-
+python3 recommend_scaling.py
 
 ──────────────────────────────────────────────────────────
 [1-B] 원본 메트릭 로그 조회
