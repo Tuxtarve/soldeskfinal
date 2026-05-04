@@ -5,5 +5,8 @@ namespace: ticketing
 
 resources:
   - serviceaccount.yaml
-  - configmap-gcp-creds.yaml
+  - rbac.yaml
   - cronjob.yaml
+  # configmap-gcp-creds.yaml 은 여기서 제외.
+  # setup-gcp.sh step[6]이 kubectl create configmap 으로 직접 생성/갱신하며,
+  # kustomize에 포함하면 placeholder 내용으로 덮어써 WIF 인증이 깨진다.

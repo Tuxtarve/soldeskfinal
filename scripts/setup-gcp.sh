@@ -142,11 +142,18 @@ else
   ok "Workload Identity Pool 생성"
 fi
 
-# 4-2. AWS Provider
+# 4-2. AWS Provider — 존재 여부와 관계없이 attribute-mapping 을 항상 올바른 값으로 갱신.
+# "이미 존재"로 skip 하면 잘못된 mapping(assertion.sub 등)이 방치되어
+# "Could not obtain a value for google.subject" 오류가 발생한다.
 if gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
     --project="$GCP_PROJECT" --location="global" \
     --workload-identity-pool="$POOL_ID" &>/dev/null; then
-  skip "AWS Provider 이미 존재"
+  gcloud iam workload-identity-pools providers update-aws "$PROVIDER_ID" \
+    --project="$GCP_PROJECT" --location="global" \
+    --workload-identity-pool="$POOL_ID" \
+    --attribute-mapping="google.subject=assertion.arn,attribute.aws_role=assertion.arn.extract('assumed-role/{role}/')" \
+    --quiet
+  ok "AWS Provider attribute-mapping 갱신"
 else
   gcloud iam workload-identity-pools providers create-aws "$PROVIDER_ID" \
     --project="$GCP_PROJECT" --location="global" \
@@ -333,15 +340,13 @@ else
   ok "ECR push 완료: ${ECR_URL}:latest"
 fi
 
-# cronjob.yaml 이미지 URI 주입
+# cronjob.yaml 이미지 URI 주입 — PLACEHOLDER 및 이전 배포자 계정 ID 둘 다 현재 ECR URL 로 갱신
 CRON_FILE="$ROOT/k8s/ai-advisor/cronjob.yaml"
-if grep -q "PLACEHOLDER_ECR_URI" "$CRON_FILE"; then
-  sed -i.bak "s|PLACEHOLDER_ECR_URI/ai-advisor:latest|${ECR_URL}:latest|" "$CRON_FILE"
-  rm -f "${CRON_FILE}.bak"
-  ok "cronjob.yaml 이미지 URI 교체 완료"
-else
-  skip "이미지 URI 이미 설정됨"
-fi
+TMP_CRON="$(mktemp)"
+sed -E "s|PLACEHOLDER_ECR_URI/ai-advisor:latest|${ECR_URL}:latest|;
+        s|[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/ticketing/ai-advisor:latest|${ECR_URL}:latest|" \
+  "$CRON_FILE" > "$TMP_CRON" && mv "$TMP_CRON" "$CRON_FILE"
+ok "cronjob.yaml 이미지 URI → ${ECR_URL}:latest"
 
 # ==========================================================
 # [9] K8s Secret + CronJob 배포
@@ -406,23 +411,58 @@ ok "RBAC ClusterRole/ClusterRoleBinding 적용"
 
 # ServiceAccount + CronJob 배포
 kubectl apply -k "$ROOT/k8s/ai-advisor/"
-ok "K8s 리소스 배포 완료"
+
+# WIF 자격증명 ConfigMap 재확인
+# kustomization 에서 제외됐지만, 이전 실행 잔재로 placeholder ConfigMap이 남아있을
+# 경우를 대비해 step[6]에서 생성한 진짜 내용으로 한 번 더 덮어쓴다.
+kubectl create configmap gcp-credential-config \
+  --from-file=config.json="$CRED_CONFIG" \
+  -n "$NS" --dry-run=client -o yaml | kubectl apply -f -
+ok "K8s 리소스 배포 완료 (gcp-credential-config WIF 자격증명 포함)"
 
 # ==========================================================
 # [10] 즉시 실행 테스트
 # ==========================================================
 hr; echo " [10] 즉시 실행 테스트"
 
-# 이전 테스트 Job 정리
-kubectl delete job ai-advisor-test -n "$NS" --ignore-not-found --wait=false 2>/dev/null || true
+# 이전 테스트 Job 완전 삭제 후 재생성
+# --wait=false 로 바로 create 하면 Terminating 상태의 잡과 이름 충돌 → "already exists" 에러 발생
+if kubectl get job ai-advisor-test -n "$NS" &>/dev/null; then
+  echo " → 이전 테스트 Job 삭제 중..."
+  kubectl delete job ai-advisor-test -n "$NS" --wait=true 2>/dev/null || true
+  # Pod 까지 완전히 사라질 때까지 대기 (최대 30초)
+  for i in $(seq 1 15); do
+    kubectl get pods -n "$NS" -l job-name=ai-advisor-test --no-headers 2>/dev/null | grep -q . || break
+    sleep 2
+  done
+fi
 
-kubectl create job ai-advisor-test \
-  --from=cronjob/ai-advisor -n "$NS"
+kubectl create job ai-advisor-test --from=cronjob/ai-advisor -n "$NS"
 ok "테스트 Job 생성 완료"
 
-echo
-echo " 로그 확인 (약 30초 후):"
-echo "   kubectl logs -n $NS -l job-name=ai-advisor-test -f"
+# Pod 가 스케줄링되어 이름이 확정될 때까지 대기 (최대 120초)
+echo " → Pod 생성 대기 중 (최대 120초)..."
+POD_NAME=""
+for i in $(seq 1 60); do
+  POD_NAME=$(kubectl get pods -n "$NS" -l job-name=ai-advisor-test \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [[ -n "$POD_NAME" ]] && { echo " → Pod 감지: $POD_NAME (${i}×2초 대기)"; break; }
+  sleep 2
+done
+
+if [[ -z "$POD_NAME" ]]; then
+  echo "WARNING: 120초 내 Pod 미생성. 아래 명령으로 원인 확인:"
+  echo "  kubectl describe job ai-advisor-test -n $NS"
+  echo "  kubectl get events -n $NS --sort-by='.lastTimestamp'"
+else
+  echo " → 로그 스트리밍 시작 (실행 완료 시 자동 종료, Ctrl+C 로 중단 가능):"
+  kubectl logs -n "$NS" pod/"$POD_NAME" \
+    --follow \
+    --pod-running-timeout=120s 2>/dev/null \
+    || kubectl logs -n "$NS" pod/"$POD_NAME" 2>/dev/null \
+    || echo " (로그 조회 실패. 수동: kubectl logs -n $NS pod/$POD_NAME)"
+fi
+
 echo
 echo " GCP Logs Explorer:"
 echo "   eks-metrics          → https://console.cloud.google.com/logs/query;query=logName%3D%22projects%2F${GCP_PROJECT}%2Flogs%2Feks-metrics%22?project=${GCP_PROJECT}"

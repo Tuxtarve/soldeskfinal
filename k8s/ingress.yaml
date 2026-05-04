@@ -7,7 +7,7 @@ metadata:
     # API GW VPC Link (private subnet) 가 올바르게 접근하려면 Internal ALB 필수.
     # internet-facing ALB 는 VPC 내부에서 split-horizon DNS 로 private IP 해석되지 않아
     # VPC Link 에서 9s timeout → 503. 외부 노출은 CloudFront + API GW 가 담당.
-    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/scheme: internal-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
     # Internal ALB 는 VPC 외부에서 접근 불가. VPC 내부(VPC Link / Pod / bastion)

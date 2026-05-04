@@ -14,6 +14,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="$ROOT/scripts"
 TF_DIR="$ROOT/terraform"
 
+# macOS BSD sed 와 Linux GNU sed 모두 지원하는 인라인 치환 헬퍼
+# (macOS: sed -i '' 필요 / Linux: sed -i 만으로 동작)
+sed_in_place() {
+  local pat="$1" file="$2" tmp
+  tmp="$(mktemp)"
+  sed "$pat" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 # ── 0. .env.local 자동 source (prepare.sh 가 생성) ──
 # DB_PASSWORD / TF_VAR_db_password 를 매 세션마다 export 하지 않아도 되게 함.
 if [[ -f "$ROOT/.env.local" ]]; then
@@ -212,8 +220,8 @@ if [ -f "$TFVARS" ] && grep -q '^alb_listener_arn' "$TFVARS"; then
     if ! aws elbv2 describe-listeners --listener-arns "$CURRENT_ARN" \
         --region "$REGION_PRE" >/dev/null 2>&1; then
       echo "tfvars: 옛 alb_listener_arn이 invalid → 빈값으로 reset"
-      sed -i 's|^alb_listener_arn.*|alb_listener_arn = ""|' "$TFVARS"
-      sed -i 's|^frontend_callback_domain.*|frontend_callback_domain = ""|' "$TFVARS"
+      sed_in_place 's|^alb_listener_arn.*|alb_listener_arn = ""|' "$TFVARS"
+      sed_in_place 's|^frontend_callback_domain.*|frontend_callback_domain = ""|' "$TFVARS"
     fi
   fi
 fi
@@ -314,12 +322,17 @@ echo "DB 스키마 + 시드 데이터 적용 완료"
 # 첫 pull이 성공한다. 이미지가 없어도 ArgoCD는 Deployment를 만들고 파드는
 # ImagePullBackOff로 기다리다가 이미지가 올라오면 자동 복구되긴 하지만,
 # Synced+Healthy 상태를 일찍 달성하기 위해 ArgoCD 설치 직전에 push 한다.
+
 echo ""
 echo "=========================================="
 echo " [9/14] Docker 이미지 빌드 & ECR Push"
 echo "=========================================="
+
 ACCOUNT_ID="$(terraform output -raw aws_account_id)"
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
+# ⭐ Mac 대응 (arm → amd64 강제)
+export DOCKER_DEFAULT_PLATFORM=linux/amd64
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "WARNING: docker CLI 미설치 — 이미지 빌드 skip."
@@ -327,22 +340,33 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "  나중에 GitHub Actions (build-and-publish.yml) 또는 CloudShell에서 push:"
   echo "    aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY"
   echo "    for SVC in ticketing-was worker-svc; do"
-  echo "      docker build -t $ECR_REGISTRY/ticketing/\$SVC:latest services/\$SVC"
-  echo "      docker push $ECR_REGISTRY/ticketing/\$SVC:latest"
+  echo "      docker buildx build --platform linux/amd64 -t $ECR_REGISTRY/ticketing/\$SVC:latest --push services/\$SVC"
   echo "    done"
-  echo "    docker build -t $ECR_REGISTRY/ticketing/frontend:latest frontend/"
-  echo "    docker push $ECR_REGISTRY/ticketing/frontend:latest"
+  echo "    docker buildx build --platform linux/amd64 -t $ECR_REGISTRY/ticketing/frontend:latest --push frontend/"
 else
   aws ecr get-login-password --region "$REGION" | \
     docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+  # ⭐ buildx 초기화 (없으면 생성)
+  docker buildx create --use --name multi-builder 2>/dev/null || true
+  docker buildx inspect --bootstrap
+
   for SVC in ticketing-was worker-svc; do
     echo "빌드 & 푸시: $SVC"
-    docker build -t "${ECR_REGISTRY}/ticketing/${SVC}:latest" "$ROOT/services/${SVC}"
-    docker push "${ECR_REGISTRY}/ticketing/${SVC}:latest"
+    docker buildx build \
+      --platform linux/amd64 \
+      -t "${ECR_REGISTRY}/ticketing/${SVC}:latest" \
+      --push \
+      "$ROOT/services/${SVC}"
   done
+
   echo "빌드 & 푸시: frontend"
-  docker build -t "${ECR_REGISTRY}/ticketing/frontend:latest" "$ROOT/frontend"
-  docker push "${ECR_REGISTRY}/ticketing/frontend:latest"
+  docker buildx build \
+    --platform linux/amd64 \
+    -t "${ECR_REGISTRY}/ticketing/frontend:latest" \
+    --push \
+    "$ROOT/frontend"
+
   echo "이미지 push 완료 (이 시점엔 아직 Deployment 없음 — ArgoCD가 step 10에서 생성)"
 fi
 
@@ -513,12 +537,12 @@ else
       # → 다음 apply에서 API GW Integration/Route 생성 + Cognito 콜백 URL 실제 도메인으로 갱신
       TFVARS="$TF_DIR/terraform.tfvars"
       if [[ -f "$TFVARS" ]] && grep -q '^alb_listener_arn' "$TFVARS"; then
-        sed -i "s|^alb_listener_arn.*|alb_listener_arn = \"$LISTENER_ARN\"|" "$TFVARS"
+        sed_in_place "s|^alb_listener_arn.*|alb_listener_arn = \"$LISTENER_ARN\"|" "$TFVARS"
       else
         echo "alb_listener_arn = \"$LISTENER_ARN\"" >> "$TFVARS"
       fi
       if [[ -f "$TFVARS" ]] && grep -q '^frontend_callback_domain' "$TFVARS"; then
-        sed -i "s|^frontend_callback_domain.*|frontend_callback_domain = \"$CLOUDFRONT_DOMAIN\"|" "$TFVARS"
+        sed_in_place "s|^frontend_callback_domain.*|frontend_callback_domain = \"$CLOUDFRONT_DOMAIN\"|" "$TFVARS"
       else
         echo "frontend_callback_domain = \"$CLOUDFRONT_DOMAIN\"" >> "$TFVARS"
       fi

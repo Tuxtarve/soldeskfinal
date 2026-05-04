@@ -1,0 +1,48 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ai-advisor-patcher
+  namespace: ticketing
+rules:
+  # K8s 상태 읽기 (collect_k8s)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list"]
+
+  # HPA 읽기 + 패치
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "patch"]
+
+  # KEDA ScaledObject 읽기 + 패치
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "patch"]
+
+  # 쿨다운 추적용 ConfigMap 생성
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+
+  # 쿨다운 ConfigMap 읽기/수정 (ai-advisor-cooldown 만)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["ai-advisor-cooldown"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-advisor-patcher
+  namespace: ticketing
+subjects:
+  - kind: ServiceAccount
+    name: ai-advisor-sa
+    namespace: ticketing
+roleRef:
+  kind: Role
+  name: ai-advisor-patcher
+  apiGroup: rbac.authorization.k8s.io

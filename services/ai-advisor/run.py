@@ -334,11 +334,29 @@ def _serialize(obj):
 _gcp_client_cache: "gcp_logging.Client | None" = None
 
 def _get_gcp_client() -> "gcp_logging.Client":
-    """WIF 인증 + GCP Logging 클라이언트를 프로세스 내 캐싱.
-    gcp_push 를 2회 호출해도 IMDS→STS→GCP 인증을 1회만 수행."""
+    """boto3로 IRSA 자격증명을 가져와 env var에 주입 후 WIF 교환.
+
+    기존 방식(IMDS 직접 접근)의 문제:
+      - IMDS에서 가져오는 것은 노드 역할 자격증명이며, 노드 역할은 GCP WIF 바인딩에
+        없거나 hop limit(기본값 1)으로 Pod에서 IMDS 접근이 실패할 수 있다.
+
+    이 방식:
+      - boto3가 AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN을 자동 처리해
+        IRSA 역할(ticketing-eks-ai-advisor)의 임시 자격증명을 취득한다.
+      - google.auth 라이브러리는 AWS_ACCESS_KEY_ID env var를 IMDS보다 우선 확인하므로,
+        boto3 자격증명을 env var에 주입하면 IRSA 역할로 WIF 교환이 성공한다.
+      - IRSA 역할은 setup-gcp.sh에서 GCP WIF에 이미 바인딩되어 있다.
+    """
     global _gcp_client_cache
     if _gcp_client_cache is not None:
         return _gcp_client_cache
+
+    # boto3로 IRSA 임시 자격증명 취득
+    frozen = boto3.Session(region_name=REGION).get_credentials().get_frozen_credentials()
+    os.environ["AWS_ACCESS_KEY_ID"]     = frozen.access_key
+    os.environ["AWS_SECRET_ACCESS_KEY"] = frozen.secret_key
+    if frozen.token:
+        os.environ["AWS_SESSION_TOKEN"] = frozen.token
 
     import google.auth
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp/config.json")
@@ -348,7 +366,7 @@ def _get_gcp_client() -> "gcp_logging.Client":
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
         _gcp_client_cache = gcp_logging.Client(project=PROJECT_ID, credentials=credentials)
-        print("[*] GCP 클라이언트 초기화 완료 (WIF)", flush=True)
+        print("[*] GCP 클라이언트 초기화 완료 (WIF via IRSA)", flush=True)
         return _gcp_client_cache
     except Exception as e:
         print(f"[!] WIF 자격증명 로드 실패 ({cred_path}): {e}", flush=True)
@@ -476,7 +494,193 @@ def call_gemini(metrics: dict, api_key: str) -> dict:
 
 
 # ============================================================
-# 4. Slack 알림
+# 4. 자동 패치 적용  (안전장치 포함)
+# ============================================================
+
+# 자동으로 건드릴 수 있는 필드만 허용 — 이 외는 절대 변경하지 않음
+# Gemini 는 실제 YAML 경로(spec.maxReplicas 등)로 반환하므로 그 형식에 맞춤
+_SAFE_FIELDS      = {"spec.maxReplicas", "spec.maxReplicaCount"}
+_MAX_SCALE_FACTOR = 2.0   # 현재값 대비 최대 2배까지만 증가 허용
+_MAX_PATCHES_RUN  = 3     # 1회 실행당 최대 패치 건수
+_COOLDOWN_MIN     = 30    # 동일 대상 재패치 금지 시간(분)
+_COOLDOWN_CM      = "ai-advisor-cooldown"
+_DRY_RUN          = os.environ.get("AI_PATCH_DRY_RUN", "false").lower() == "true"
+
+
+def _cooldown_load(ns: str) -> dict:
+    try:
+        cm = _k8s_client().CoreV1Api().read_namespaced_config_map(_COOLDOWN_CM, ns)
+        return json.loads(cm.data.get("patches", "{}"))
+    except Exception:
+        return {}
+
+
+def _cooldown_save(ns: str, data: dict) -> None:
+    v1 = _k8s_client().CoreV1Api()
+    body = {
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": _COOLDOWN_CM, "namespace": ns},
+        "data": {"patches": json.dumps(data)},
+    }
+    try:
+        v1.replace_namespaced_config_map(_COOLDOWN_CM, ns, body)
+    except Exception:
+        try:
+            v1.create_namespaced_config_map(ns, body)
+        except Exception as e:
+            print(f"[!] 쿨다운 저장 실패: {e}", flush=True)
+
+
+def _get_current_value(target: str, field: str, ns: str) -> int | None:
+    """K8s API 에서 현재 실제값을 읽어 반환. Gemini 출력의 from 값은 믿지 않음."""
+    parts         = [p.strip() for p in target.split("/")]
+    resource_type = parts[0].lower() if parts else ""
+    resource_name = parts[-1]        if parts else target.strip()
+    k = _k8s_client()
+    try:
+        if field == "spec.maxReplicas" and resource_type == "hpa":
+            hpa = k.AutoscalingV2Api().read_namespaced_horizontal_pod_autoscaler(resource_name, ns)
+            return hpa.spec.max_replicas
+        if field == "spec.maxReplicaCount" and resource_type == "keda":
+            obj = k.CustomObjectsApi().get_namespaced_custom_object(
+                "keda.sh", "v1alpha1", ns, "scaledobjects", resource_name)
+            return obj.get("spec", {}).get("maxReplicaCount")
+    except Exception as e:
+        print(f"[!] 현재값 조회 실패 {target}/{field}: {e}", flush=True)
+    return None
+
+
+def _do_k8s_patch(target: str, field: str, value: int, ns: str) -> bool:
+    """target 형식: "hpa/read-api-hpa"  또는  "keda/scaledobject-name"
+    field 형식: "spec.maxReplicas"  또는  "spec.maxReplicaCount"
+    """
+    k = _k8s_client()
+    # "hpa/read-api-hpa"              → type="hpa",  name="read-api-hpa"
+    # "keda/scaledobject/worker-svc-sqs" → type="keda", name="worker-svc-sqs"
+    parts         = [p.strip() for p in target.split("/")]
+    resource_type = parts[0].lower() if parts else ""
+    resource_name = parts[-1]        if parts else target.strip()
+    try:
+        if field == "spec.maxReplicas" and resource_type == "hpa":
+            k.AutoscalingV2Api().patch_namespaced_horizontal_pod_autoscaler(
+                resource_name, ns, {"spec": {"maxReplicas": value}}
+            )
+        elif field == "spec.maxReplicaCount" and resource_type == "keda":
+            k.CustomObjectsApi().patch_namespaced_custom_object(
+                "keda.sh", "v1alpha1", ns, "scaledobjects", resource_name,
+                {"spec": {"maxReplicaCount": value}},
+            )
+        else:
+            print(f"[!] 패치 불가 필드: target={target} field={field}", flush=True)
+            return False
+        return True
+    except Exception as e:
+        print(f"[!] 패치 실패 {target}/{field}: {e}", flush=True)
+        return False
+
+
+def apply_safe_patches(recs: list, ns: str) -> list:
+    """안전 조건을 통과한 추천만 K8s에 직접 적용하고 적용 목록을 반환.
+
+    안전 조건:
+      - priority=now  AND  confidence=high  AND  risk∈{none,low}
+      - field 가 _SAFE_FIELDS 에 포함
+      - 값이 현재보다 증가하는 방향 (감소 거부)
+      - 현재값의 2배 초과 시 클램프
+      - 30분 이내 동일 대상 재패치 금지
+      - 1회 실행 최대 3건
+    """
+    now = datetime.now(timezone.utc)
+    cooldown = _cooldown_load(ns)
+    applied = []
+
+    candidates = [
+        r for r in recs
+        if r.get("priority") == "now"
+        and r.get("confidence") == "high"
+        and r.get("risk") in ("none", "low")
+        and r.get("field") in _SAFE_FIELDS
+    ][:_MAX_PATCHES_RUN]
+
+    if not candidates:
+        print("[~] 자동 패치 대상 없음 (안전 조건 미달)", flush=True)
+        return []
+
+    for rec in candidates:
+        key = f"{rec['target']}/{rec['field']}"
+
+        # 쿨다운: 30분 이내 동일 대상 재패치 금지
+        last_str = cooldown.get(key)
+        if last_str:
+            elapsed = (now - datetime.fromisoformat(last_str)).total_seconds() / 60
+            if elapsed < _COOLDOWN_MIN:
+                print(f"[~] 쿨다운 스킵: {key} ({elapsed:.0f}분 전 적용됨)", flush=True)
+                continue
+
+        # Gemini의 from 값은 할루시네이션이 잦으므로 K8s 실제값으로 대체
+        import re as _re
+        def _parse_int(s: str) -> int | None:
+            m = _re.search(r'\d+', str(s))
+            return int(m.group()) if m else None
+
+        actual_v = _get_current_value(rec["target"], rec["field"], ns)
+        from_v   = actual_v if actual_v is not None else _parse_int(rec.get("from", ""))
+        to_v     = _parse_int(rec.get("to", ""))
+
+        if from_v is None or to_v is None:
+            print(f"[!] 값 파싱 실패, 스킵: {key}  실제={actual_v} gemini_from={rec.get('from')} to={rec.get('to')}", flush=True)
+            continue
+
+        print(f"[~] 현재값 확인: {key}  실제={from_v} (Gemini주장={rec.get('from')}) → 추천={to_v}", flush=True)
+
+        # 감소 거부 — 장애 대응 중 스케일 다운은 금지
+        if to_v <= from_v:
+            print(f"[!] 감소 거부: {key}  실제={from_v} → 추천={to_v}", flush=True)
+            continue
+
+        # 2배 초과 클램프 — 급격한 변경 방지
+        cap = max(from_v + 1, int(from_v * _MAX_SCALE_FACTOR))
+        if to_v > cap:
+            print(f"[~] 2배 클램프: {key}  요청={to_v} → 적용={cap}", flush=True)
+            to_v = cap
+
+        tag = "[DRY]" if _DRY_RUN else "[PATCH]"
+        print(f"{tag} {key}: {from_v} → {to_v}  | {rec.get('reason','')[:80]}", flush=True)
+
+        ok = True if _DRY_RUN else _do_k8s_patch(rec["target"], rec["field"], to_v, ns)
+
+        if ok:
+            cooldown[key] = now.isoformat()
+            applied.append({**rec, "to": str(to_v), "appliedAt": now.isoformat(), "dryRun": _DRY_RUN})
+
+    if applied and not _DRY_RUN:
+        _cooldown_save(ns, cooldown)
+
+    return applied
+
+
+def _slack_patch_notify(applied: list) -> None:
+    if not SLACK_WEBHOOK or not applied:
+        return
+    mode  = " *(DRY RUN)*" if _DRY_RUN else ""
+    lines = [f":wrench: [AI 자동 패치 {len(applied)}건{mode}]"]
+    for p in applied:
+        lines.append(
+            f"• `{p['target']}` `{p['field']}` : {p.get('from','?')} → {p['to']}"
+            f"  [위험:{p.get('risk','-')}]  _{p.get('reason','')[:80]}_"
+        )
+    data = json.dumps({"text": "\n".join(lines)}).encode("utf-8")
+    req  = urllib.request.Request(
+        SLACK_WEBHOOK, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            print(f"[+] Slack 패치 알림 전송 (HTTP {r.status})", flush=True)
+    except Exception as e:
+        print(f"[!] Slack 패치 알림 실패: {e}", flush=True)
+
+
+# ============================================================
+# 5. Slack 알림
 # ============================================================
 
 def slack_notify(rec: dict) -> None:
@@ -487,7 +691,7 @@ def slack_notify(rec: dict) -> None:
     if not now_items:
         return
 
-    header = f":robot_face: [AI Advisor] NOW 추천 {len(now_items)}건"
+    header = f":robot_face: [AI Advisor] NOW {len(now_items)} items"
     lines  = [f"• *{r['target']}* `{r['field']}` `{r['from']} → {r['to']}`"
                f"  _{r['risk']}/{r['confidence']}_\n   ↳ {r['reason'][:160]}"
                for r in now_items[:10]]
@@ -598,10 +802,14 @@ def main() -> int:
     # ── Gemini 추천 ───────────────────────────────────────────
     print("[*] Gemini 추천 요청...", flush=True)
     rec = call_gemini(metrics, api_key)
-    print(f"[+] 추천 수신: NOW {sum(1 for r in rec.get('recommendations',[]) if r.get('priority')=='now')}건", flush=True)
+    recs = rec.get("recommendations", [])
+    print(f"[+] 추천 수신: NOW {sum(1 for r in recs if r.get('priority')=='now')}건", flush=True)
+    print(f"[Gemini 요약] {rec.get('summary','')}", flush=True)
+    for r in recs:
+        pri = r.get('priority','?').upper()
+        print(f"  [{pri}][{r.get('risk','-')}위험][신뢰:{r.get('confidence','-')}] {r.get('target','')} / {r.get('field','')} : {r.get('reason','')[:80]}", flush=True)
 
     # ── GCP: 추천 전송 ────────────────────────────────────────
-    recs = rec.get("recommendations", [])
     gcp_push("gemini-recommendations", {
         "source":   "cronjob",
         "timestamp": ts,
@@ -619,8 +827,23 @@ def main() -> int:
         "recommendations": recs,
     }, severity=severity_from_rec(rec))
 
-    # ── Slack 알림 ────────────────────────────────────────────
+    # ── Slack 알림 (추천) ─────────────────────────────────────
     slack_notify(rec)
+
+    # ── 자동 패치 적용 ────────────────────────────────────────
+    mode = "DRY RUN" if _DRY_RUN else "실제 적용"
+    print(f"[*] 자동 패치 시작 ({mode})...", flush=True)
+    applied = apply_safe_patches(recs, NS)
+    if applied:
+        print(f"[+] 자동 패치 완료: {len(applied)}건 ({mode})", flush=True)
+        gcp_push("ai-auto-patches", {
+            "source":    "cronjob",
+            "timestamp": ts,
+            "dryRun":    _DRY_RUN,
+            "count":     len(applied),
+            "patches":   applied,
+        }, severity="INFO" if _DRY_RUN else "WARNING")
+        _slack_patch_notify(applied)
 
     print(f"[*] AI Advisor 완료", flush=True)
     return 0

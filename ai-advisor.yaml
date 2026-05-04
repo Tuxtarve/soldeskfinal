@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"batch/v1","kind":"CronJob","metadata":{"annotations":{},"creationTimestamp":"2026-04-29T07:07:25Z","generation":1,"name":"ai-advisor","namespace":"ticketing","resourceVersion":"31080","uid":"b232eabf-a601-469f-951d-3e356043346e"},"spec":{"concurrencyPolicy":"Forbid","failedJobsHistoryLimit":3,"jobTemplate":{"metadata":{"creationTimestamp":null},"spec":{"activeDeadlineSeconds":900,"backoffLimit":1,"template":{"metadata":{"creationTimestamp":null},"spec":{"containers":[{"env":[{"name":"GEMINI_API_KEY","valueFrom":{"secretKeyRef":{"key":"GEMINI_API_KEY","name":"ai-advisor-secrets"}}},{"name":"SLACK_WEBHOOK_URL","valueFrom":{"secretKeyRef":{"key":"SLACK_WEBHOOK_URL","name":"ai-advisor-secrets","optional":true}}},{"name":"GCP_PROJECT_ID","value":"soldesk-gcp"},{"name":"AWS_REGION","value":"ap-northeast-2"},{"name":"PROMETHEUS_URL","value":"http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"},{"name":"GOOGLE_APPLICATION_CREDENTIALS","value":"/etc/gcp/config.json"}],"image":"032098305878.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor:latest","imagePullPolicy":"Always","name":"ai-advisor","resources":{"limits":{"cpu":"500m","memory":"512Mi"},"requests":{"cpu":"100m","memory":"256Mi"}},"terminationMessagePath":"/dev/termination-log","terminationMessagePolicy":"File","volumeMounts":[{"mountPath":"/etc/gcp","name":"gcp-wif","readOnly":true}]}],"dnsPolicy":"ClusterFirst","restartPolicy":"OnFailure","schedulerName":"default-scheduler","securityContext":{},"serviceAccount":"ai-advisor-sa","serviceAccountName":"ai-advisor-sa","terminationGracePeriodSeconds":30,"volumes":[{"name":"gcp-wif","secret":{"defaultMode":420,"secretName":"gcp-wif-config"}}]}}}},"schedule":"*/10 * * * *","successfulJobsHistoryLimit":3,"suspend":false},"status":{"active":[{"apiVersion":"batch/v1","kind":"Job","name":"ai-advisor-29624140","namespace":"ticketing","resourceVersion":"31079","uid":"b46cbb85-c6c9-468d-8cf0-411e51689f9e"}],"lastScheduleTime":"2026-04-29T07:40:00Z"}}
+  creationTimestamp: "2026-04-29T07:07:25Z"
+  generation: 2
+  name: ai-advisor
+  namespace: ticketing
+  resourceVersion: "38381"
+  uid: b232eabf-a601-469f-951d-3e356043346e
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      creationTimestamp: null
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 1
+      template:
+        metadata:
+          creationTimestamp: null
+        spec:
+          containers:
+          - env:
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: GEMINI_API_KEY
+                  name: ai-advisor-secrets
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  key: SLACK_WEBHOOK_URL
+                  name: ai-advisor-secrets
+                  optional: true
+            - name: GCP_PROJECT_ID
+              value: soldesk-gcp
+            - name: AWS_REGION
+              value: ap-northeast-2
+            - name: PROMETHEUS_URL
+              value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /etc/gcp/config.json
+            image: 032098305878.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor:latest
+            imagePullPolicy: Always
+            name: ai-advisor
+            resources:
+              limits:
+                cpu: 500m
+                memory: 512Mi
+              requests:
+                cpu: 100m
+                memory: 256Mi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+            - mountPath: /etc/gcp
+              name: gcp-wif
+              readOnly: true
+          dnsPolicy: ClusterFirst
+          restartPolicy: OnFailure
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccount: ai-advisor-sa
+          serviceAccountName: ai-advisor-sa
+          terminationGracePeriodSeconds: 30
+          volumes:
+          - name: gcp-wif
+            secret:
+              defaultMode: 420
+              secretName: gcp-wif-config
+  schedule: '*/10 * * * *'
+  successfulJobsHistoryLimit: 3
+  suspend: false
+status:
+  lastScheduleTime: "2026-04-29T08:00:00Z"

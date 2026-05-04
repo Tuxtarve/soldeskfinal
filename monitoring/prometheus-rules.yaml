@@ -20,8 +20,12 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "reservation error rate {{ $value | humanizePercentage }}"
-            description: "5-min reservation error rate exceeded 5 pct."
+            summary: "🔴 예약 에러율 급등"
+            description: |
+              서비스: {{ $labels.job }}
+              에러율: {{ $value | humanizePercentage }}
+              네임스페이스: ticketing
+              기준: 5분 에러율 5% 초과
 
         - alert: SQSQueueBacklog
           expr: aws_sqs_approximate_number_of_messages_visible_maximum > 500
@@ -29,8 +33,11 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "SQS queue backlog {{ $value }}"
-            description: "More than 500 messages in the reservation queue."
+            summary: "🔴 SQS 큐 적체 발생"
+            description: |
+              대기 메시지 수: {{ $value }}
+              큐: ticketing-reservation.fifo
+              기준: 500개 초과 3분 지속
 
         - alert: ServiceHealthCheckFailed
           expr: up{job=~"read-api|write-api|worker-svc"} == 0
@@ -38,8 +45,11 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "{{ $labels.job }} health check failed"
-            description: "Service is not responding. Check pod status."
+            summary: "🔴 서비스 다운 감지"
+            description: |
+              서비스: {{ $labels.job }}
+              상태: Health Check 실패
+              네임스페이스: ticketing
 
     # ── Warning ────────────────────────────────────────
     - name: ticketing-warning
@@ -51,7 +61,11 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "Read Replica lag {{ $value }}s"
+            summary: "⚠️ RDS 복제 지연 발생"
+            description: |
+              복제 지연: {{ $value }}초
+              기준: 5초 초과
+              영향: Read Replica 응답 지연 가능
 
         - alert: RedisMemoryHigh
           expr: aws_elasticache_database_memory_usage_percentage_average > 75
@@ -59,7 +73,11 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "Redis memory {{ $value }}%"
+            summary: "⚠️ Redis 메모리 임계치 초과"
+            description: |
+              현재 사용률: {{ $value }}%
+              기준: 75% 초과 5분 지속
+              영향: 캐시 Eviction 발생 가능
 
         - alert: RDSHighCPU
           expr: aws_rds_cpuutilization_average > 80
@@ -67,7 +85,11 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "RDS CPU {{ $value }}%"
+            summary: "⚠️ RDS CPU 높음"
+            description: |
+              현재 CPU: {{ $value }}%
+              기준: 80% 초과 5분 지속
+              영향: 쿼리 지연 가능
 
         - alert: DLQMessageReceived
           expr: aws_sqs_approximate_number_of_messages_visible_maximum{queue_name=~".*dlq.*"} > 0
@@ -75,8 +97,11 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "DLQ messages {{ $value }}"
-            description: "Reservation messages failed 3 times."
+            summary: "⚠️ DLQ 메시지 감지"
+            description: |
+              DLQ 메시지 수: {{ $value }}
+              큐: ticketing-reservation-dlq.fifo
+              원인: 예약 처리 3회 실패
 
         - alert: ReservationSlowResponse
           expr: histogram_quantile(0.99, rate(reservation_duration_ms_bucket[5m])) > 1000
@@ -84,7 +109,11 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "Reservation p99 {{ $value }}ms"
+            summary: "⚠️ 예약 응답 지연 (P99)"
+            description: |
+              P99 응답시간: {{ $value }}ms
+              기준: 1000ms 초과 3분 지속
+              영향: 사용자 예약 경험 저하
 
         - alert: NodeHighCPU
           expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
@@ -92,4 +121,53 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "Node CPU {{ $value }}%"
+            summary: "⚠️ 노드 CPU 높음"
+            description: |
+              노드: {{ $labels.instance }}
+              현재 CPU: {{ $value }}%
+              기준: 80% 초과 5분 지속
+
+    # ── AutoScaling (K8s 네이티브 메트릭 기반) ────────────
+    - name: ticketing-autoscaling
+      rules:
+
+        - alert: HPAScaledOut
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="ticketing"}
+            > kube_horizontalpodautoscaler_spec_min_replicas{namespace="ticketing"}
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: "🚨 HPA Scale Out 발생"
+            description: |
+              서비스: {{ $labels.horizontalpodautoscaler }}
+              현재 Pod 수: {{ $value }}
+              네임스페이스: {{ $labels.namespace }}
+
+        - alert: KEDAWorkerScaledOut
+          expr: |
+            kube_deployment_status_replicas{namespace="ticketing", deployment="worker-svc-burst"} > 1
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: "⚡ KEDA Worker Scale Out 발생"
+            description: |
+              서비스: worker-svc-burst (SQS 기반)
+              현재 Pod 수: {{ $value }}
+              네임스페이스: {{ $labels.namespace }}
+              트리거: SQS 큐 메시지 급증
+
+        - alert: PodCountSurge
+          expr: |
+            count(kube_pod_status_phase{namespace="ticketing", phase="Running"}) > 6
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: "📈 Pod 급증 감지 — 오토스케일링 진행 중"
+            description: |
+              현재 Running Pod 수: {{ $value }}
+              네임스페이스: ticketing
+              상태: 부하 증가로 전체 Pod 자동 증설 중

@@ -14,7 +14,6 @@ spec:
 
   jobTemplate:
     spec:
-      # ❗ 실행시간 부족 해결 (기존 180 → 900)
       activeDeadlineSeconds: 900
       backoffLimit: 1
 
@@ -23,10 +22,22 @@ spec:
           serviceAccountName: ai-advisor-sa
           restartPolicy: OnFailure
 
+          # gcp-credential-config ConfigMap을 /etc/gcp/config.json 으로 마운트
+          # (setup-gcp.sh step[6]이 생성, WIF 인증에 필수)
+          volumes:
+            - name: gcp-credential-config
+              configMap:
+                name: gcp-credential-config
+
           containers:
             - name: ai-advisor
               image: 032098305878.dkr.ecr.ap-northeast-2.amazonaws.com/ticketing/ai-advisor:latest
               imagePullPolicy: Always
+
+              volumeMounts:
+                - name: gcp-credential-config
+                  mountPath: /etc/gcp
+                  readOnly: true
 
               env:
                 # Gemini API 키
@@ -44,8 +55,9 @@ spec:
                       key: SLACK_WEBHOOK_URL
                       optional: true
 
-                # ❗ WIF 사용 → JSON 인증 제거
-                # (GOOGLE_APPLICATION_CREDENTIALS 삭제됨)
+                # WIF 자격증명 파일 경로 (ConfigMap 마운트 경로와 일치)
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: "/etc/gcp/config.json"
 
                 # GCP 설정
                 - name: GCP_PROJECT_ID
@@ -55,11 +67,16 @@ spec:
                 - name: AWS_REGION
                   value: "ap-northeast-2"
 
+                # 자동 패치 안전 스위치
+                # "true" = 실제 변경 없이 로그만 출력 (테스트/검증용)
+                # "false" = HPA/KEDA 실제 패치 적용
+                - name: AI_PATCH_DRY_RUN
+                  value: "false"
+
                 # Prometheus 내부 접근
                 - name: PROMETHEUS_URL
                   value: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
 
-              
               resources:
                 requests:
                   cpu: "100m"
@@ -67,5 +84,3 @@ spec:
                 limits:
                   cpu: "500m"
                   memory: "512Mi"
-
-          

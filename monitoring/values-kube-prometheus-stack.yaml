@@ -96,17 +96,26 @@ grafana:
     enabled: true
     storageClassName: gp3
     size: 5Gi
-  # 실사용 463Mi(limit 미설정으로 누수) → limit 200Mi 고정으로 절감
-  # Grafana 자체는 100~150Mi 면 충분, 대시보드 캐시 포함 200Mi 여유
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
-      cpu: 200m
-      memory: 200Mi
+      cpu: 300m
+      memory: 512Mi
   service:
     type: ClusterIP
+
+  # readiness probe: 기본 timeout=1s 는 t3.small SQLite 부하 시 너무 짧아 503 반복.
+  # timeout 10s / failureThreshold 6 으로 여유 확보.
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 30
+    timeoutSeconds: 10
+    periodSeconds: 10
+    failureThreshold: 6
 
   # Loki datasource
   additionalDataSources:
@@ -116,6 +125,17 @@ grafana:
       url: http://loki.monitoring.svc.cluster.local:3100
       uid: loki
       editable: false
+
+  # sidecar가 /tmp/dashboards 에 쓰고, provider 도 같은 경로를 읽도록 맞춤.
+  # 기존 /var/lib/grafana/dashboards/default 는 sidecar mount 경로와 불일치 →
+  # "no such file or directory" 에러 루프 → SQLite 경합 악화.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: monitoring
+      folder: /tmp/dashboards
 
   dashboardProviders:
     dashboardproviders.yaml:
@@ -128,15 +148,7 @@ grafana:
           disableDeletion: false
           editable: true
           options:
-            path: /var/lib/grafana/dashboards/default
-
-  # Dashboard JSON will be loaded via ConfigMap sidecar
-  sidecar:
-    dashboards:
-      enabled: true
-      label: grafana_dashboard
-      labelValue: "1"
-      searchNamespace: monitoring
+            path: /tmp/dashboards
 
   grafana.ini:
     server:
@@ -144,6 +156,17 @@ grafana:
       serve_from_sub_path: true
     date_formats:
       default_timezone: Asia/Seoul
+    dataproxy:
+      # 무거운 Prometheus 쿼리가 Grafana를 블로킹하지 않도록 타임아웃 설정
+      timeout: 300
+      keep_alive_seconds: 300
+    database:
+      # SQLite WAL 모드 — 읽기/쓰기 동시 접근 시 SQLITE_BUSY 방지
+      wal: true
+    feature_toggles:
+      # Grafana 13 secure values API가 K8s Lease 호출 타임아웃 → SQLite 경합.
+      # 실험적 기능 비활성화.
+      grafanaAPIServerWithExperimentalAPIs: false
 
 # ── AlertManager ───────────────────────────────────────
 alertmanager:
@@ -182,17 +205,11 @@ alertmanager:
     receivers:
       - name: 'slack'
         slack_configs:
-          - api_url: 'SLACK_WEBHOOK_PLACEHOLDER'
+          - api_url: '${SLACK_WEBHOOK_URL}'
             send_resolved: true
             channel: '#alerts'
-            title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
-            text: >-
-              {{ range .Alerts }}
-              *severity*: {{ .Labels.severity }}
-              *summary*: {{ .Annotations.summary }}
-              *starts*: {{ .StartsAt.Format "2006-01-02 15:04:05" }}
-              ---
-              {{ end }}
+            title: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+            text: "{{ range .Alerts }}{{ .Annotations.description }}\n🕐 발생: {{ .StartsAt.In (\"Asia/Seoul\") }}\n{{ end }}"
     inhibit_rules:
       - source_match:
           severity: 'critical'

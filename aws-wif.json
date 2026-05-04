@@ -1,0 +1,13 @@
+{
+  "universe_domain": "googleapis.com",
+  "type": "external_account",
+  "audience": "//iam.googleapis.com/projects/650524153847/locations/global/workloadIdentityPools/eks-pool/providers/eks-oidc-provider",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_url": "https://sts.googleapis.com/v1/token",
+
+  "credential_source": {
+    "file": "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+  },
+
+  "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/eks-ai-advisor@soldesk-gcp.iam.gserviceaccount.com:generateAccessToken"
+}
