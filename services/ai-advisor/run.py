@@ -401,6 +401,67 @@ def severity_from_rec(rec: dict) -> str:
     return "INFO"
 
 
+def collect_gcp_history(minutes: int = 60) -> list[dict]:
+    """GCP Cloud Logging에서 과거 eks-metrics 스냅샷을 읽어 트렌드 요약 반환.
+
+    10분 간격 CronJob 기준 최대 6개 스냅샷(60분)을 조회해
+    SQS 깊이·HPA 레플리카·CPU 트렌드를 압축 반환한다.
+    매 실행마다 GCP에 쌓인 과거 로그를 다시 읽어 Gemini 예측에 활용한다.
+    """
+    from datetime import timedelta
+    client = _get_gcp_client()
+    now   = datetime.now(timezone.utc)
+    since = (now - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    result = []
+    try:
+        filter_str = (
+            f'logName="projects/{PROJECT_ID}/logs/eks-metrics" '
+            f'AND timestamp>="{since}"'
+        )
+        for entry in client.list_entries(
+            filter_=filter_str,
+            order_by="timestamp asc",
+            page_size=10,
+        ):
+            p    = entry.payload if isinstance(entry.payload, dict) else {}
+            prom = p.get("prometheus", {})
+            cw   = p.get("cloudwatch", {})
+
+            hpa_replicas: dict = {}
+            for r in prom.get("hpaCurrentReplicas", []):
+                if isinstance(r, dict):
+                    name = r.get("metric", {}).get("horizontalpodautoscaler", "")
+                    if name:
+                        hpa_replicas[name] = r.get("value")
+
+            rds_conn = None
+            rds_list = cw.get("rds", {}).get("connections15m", [])
+            if rds_list:
+                rds_conn = rds_list[-1].get("Average") or rds_list[-1].get("Maximum")
+
+            result.append({
+                "time":        p.get("collectedAt", str(entry.timestamp)),
+                "sqsWaiting":  p.get("summary", {}).get("sqsDepth", {}).get("waiting",  0),
+                "sqsInFlight": p.get("summary", {}).get("sqsDepth", {}).get("inFlight", 0),
+                "hpaReplicas": hpa_replicas,
+                "podRestarts": sum(
+                    r.get("value", 0) for r in prom.get("podRestarts", [])
+                    if isinstance(r, dict)
+                ),
+                "rdsCpu": (
+                    cw.get("rds", {}).get("cpu15m", [{}])[-1].get("Average")
+                    if cw.get("rds", {}).get("cpu15m") else None
+                ),
+                "rdsConnections": rds_conn,
+            })
+    except Exception as e:
+        print(f"[!] GCP 히스토리 조회 실패: {e}", flush=True)
+
+    print(f"[*] GCP 히스토리 {len(result)}개 스냅샷 조회 완료", flush=True)
+    return result
+
+
 # ============================================================
 # 3. Gemini 추천
 # ============================================================
@@ -445,18 +506,34 @@ RESPONSE_SCHEMA = {
 }
 
 
-def call_gemini(metrics: dict, api_key: str) -> dict:
+def call_gemini(metrics: dict, api_key: str, history: list | None = None) -> dict:
     context_md = CONTEXT_FILE.read_text(encoding="utf-8")
+
+    history_section = ""
+    req_extra       = ""
+    if history:
+        history_section = (
+            f"\n\n---\n\n## N. 과거 트렌드 스냅샷 (최근 60분, {len(history)}개)\n\n"
+            f"```json\n{json.dumps(history, ensure_ascii=False, indent=2)}\n```\n\n"
+            f"이 트렌드를 기반으로 **향후 10~30분 내 예상 부하를 예측**하고,\n"
+            f"현재 메트릭이 아직 임계치 미달이더라도 상승 추세라면 `priority: now`로 선제 추천하라.\n"
+        )
+        req_extra = (
+            "\n- §N 트렌드가 있을 경우 sqsWaiting·hpaReplicas·rdsCpu 증가 추세를 분석해"
+            " 선제적 스케일 추천을 포함하라."
+        )
 
     prompt = (
         f"{context_md}\n\n---\n\n"
         f"## L. 현재 메트릭 스냅샷 (DYNAMIC)\n\n"
-        f"```json\n{json.dumps(metrics, ensure_ascii=False, indent=2, default=str)}\n```\n\n"
-        f"---\n\n## M. 요청\n\n"
+        f"```json\n{json.dumps(metrics, ensure_ascii=False, indent=2, default=str)}\n```\n"
+        f"{history_section}"
+        f"\n---\n\n## M. 요청\n\n"
         f"§H 의 12개 항목을 기준으로 §K 스키마에 맞춰 추천하라.\n"
         f"- §J 필드 해설을 참고해 prometheus / cloudwatch 데이터를 적극 활용하라.\n"
         f"- 빈 배열/객체 필드는 수집 실패로 간주하고 해당 항목 추천에서 제외하라.\n"
         f"- `from`/`to` 는 문자열로 표기."
+        f"{req_extra}"
     )
 
     client = genai.Client(api_key=api_key)
@@ -799,9 +876,14 @@ def main() -> int:
         "cloudwatch":  {"rds": cw_rds, "redis": cw_redis},
     }, severity=severity_from_metrics(metrics))
 
+    # ── GCP 히스토리 수집 (예측용 트렌드) ────────────────────────
+    # GCP에 쌓인 과거 스냅샷을 다시 읽어 Gemini가 증가 추세를 예측할 수 있게 함
+    print("[*] GCP 히스토리 수집 중...", flush=True)
+    history = collect_gcp_history(minutes=60)
+
     # ── Gemini 추천 ───────────────────────────────────────────
     print("[*] Gemini 추천 요청...", flush=True)
-    rec = call_gemini(metrics, api_key)
+    rec = call_gemini(metrics, api_key, history=history)
     recs = rec.get("recommendations", [])
     print(f"[+] 추천 수신: NOW {sum(1 for r in recs if r.get('priority')=='now')}건", flush=True)
     print(f"[Gemini 요약] {rec.get('summary','')}", flush=True)
