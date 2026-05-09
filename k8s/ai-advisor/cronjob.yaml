@@ -69,9 +69,20 @@ spec:
 
                 # 자동 패치 안전 스위치
                 # "true" = 실제 변경 없이 로그만 출력 (테스트/검증용)
-                # "false" = HPA/KEDA 실제 패치 적용
+                # "false" = GitHub 커밋 → ArgoCD 자동 적용
                 - name: AI_PATCH_DRY_RUN
                   value: "false"
+
+                # GitHub GitOps 패치용 (Fine-grained PAT: Contents write 권한)
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: ai-advisor-secrets
+                      key: GITHUB_TOKEN
+                - name: GITHUB_REPO
+                  value: "Tuxtarve/soldeskfinal"
+                - name: GITHUB_BRANCH
+                  value: "FINAL"
 
                 # Prometheus 내부 접근
                 - name: PROMETHEUS_URL

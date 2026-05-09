@@ -20,8 +20,10 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -51,7 +53,11 @@ PROM_URL     = os.environ.get("PROMETHEUS_URL",
     "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090")
 SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "")
 
-CONTEXT_FILE = Path(__file__).parent / "context" / "system.md"
+CONTEXT_FILE  = Path(__file__).parent / "context" / "system.md"
+
+GITHUB_TOKEN  = os.environ.get("GITHUB_TOKEN",  "")
+GITHUB_REPO   = os.environ.get("GITHUB_REPO",   "Tuxtarve/soldeskfinal")
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "FINAL")
 
 
 # ============================================================
@@ -577,6 +583,13 @@ def call_gemini(metrics: dict, api_key: str, history: list | None = None) -> dic
 # 자동으로 건드릴 수 있는 필드만 허용 — 이 외는 절대 변경하지 않음
 # Gemini 는 실제 YAML 경로(spec.maxReplicas 등)로 반환하므로 그 형식에 맞춤
 _SAFE_FIELDS      = {"spec.maxReplicas", "spec.maxReplicaCount"}
+
+# (resource_type, resource_name) → git 내 YAML 파일 경로
+_GIT_FILE_MAP: dict[tuple[str, str], str] = {
+    ("hpa",  "read-api-hpa"):   "k8s/read-api/hpa.yaml",
+    ("hpa",  "write-api-hpa"):  "k8s/write-api/hpa.yaml",
+    ("keda", "worker-svc-sqs"): "k8s/keda/scaledobject-worker-svc-sqs.yaml",
+}
 _MAX_SCALE_FACTOR = 2.0   # 현재값 대비 최대 2배까지만 증가 허용
 _MAX_PATCHES_RUN  = 3     # 1회 실행당 최대 패치 건수
 _COOLDOWN_MIN     = 30    # 동일 대상 재패치 금지 시간(분)
@@ -627,33 +640,68 @@ def _get_current_value(target: str, field: str, ns: str) -> int | None:
     return None
 
 
-def _do_k8s_patch(target: str, field: str, value: int, ns: str) -> bool:
-    """target 형식: "hpa/read-api-hpa"  또는  "keda/scaledobject-name"
-    field 형식: "spec.maxReplicas"  또는  "spec.maxReplicaCount"
+def _do_git_patch(target: str, field: str, value: int, _ns: str) -> bool:
+    """GitHub API로 k8s YAML 파일을 수정·커밋한다.
+    ArgoCD(automated + selfHeal)가 커밋을 감지해 클러스터에 자동 적용한다.
+    직접 K8s API를 건드리지 않으므로 selfHeal 충돌이 없다.
     """
-    k = _k8s_client()
-    # "hpa/read-api-hpa"              → type="hpa",  name="read-api-hpa"
-    # "keda/scaledobject/worker-svc-sqs" → type="keda", name="worker-svc-sqs"
+    if not GITHUB_TOKEN:
+        print("[!] GITHUB_TOKEN 미설정 — git 패치 불가", flush=True)
+        return False
+
     parts         = [p.strip() for p in target.split("/")]
     resource_type = parts[0].lower() if parts else ""
     resource_name = parts[-1]        if parts else target.strip()
-    try:
-        if field == "spec.maxReplicas" and resource_type == "hpa":
-            k.AutoscalingV2Api().patch_namespaced_horizontal_pod_autoscaler(
-                resource_name, ns, {"spec": {"maxReplicas": value}}
-            )
-        elif field == "spec.maxReplicaCount" and resource_type == "keda":
-            k.CustomObjectsApi().patch_namespaced_custom_object(
-                "keda.sh", "v1alpha1", ns, "scaledobjects", resource_name,
-                {"spec": {"maxReplicaCount": value}},
-            )
-        else:
-            print(f"[!] 패치 불가 필드: target={target} field={field}", flush=True)
-            return False
-        return True
-    except Exception as e:
-        print(f"[!] 패치 실패 {target}/{field}: {e}", flush=True)
+
+    git_path = _GIT_FILE_MAP.get((resource_type, resource_name))
+    if not git_path:
+        print(f"[!] _GIT_FILE_MAP 미등록 대상: {target}", flush=True)
         return False
+
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{git_path}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept":        "application/vnd.github.v3+json",
+    }
+
+    # ── 현재 파일 조회 (SHA 필요) ──────────────────────────────
+    resp = requests.get(api_url, params={"ref": GITHUB_BRANCH},
+                        headers=headers, timeout=15)
+    if resp.status_code != 200:
+        print(f"[!] GitHub 파일 조회 실패 ({resp.status_code}): {git_path}", flush=True)
+        return False
+
+    file_info   = resp.json()
+    sha         = file_info["sha"]
+    raw_content = base64.b64decode(file_info["content"]).decode("utf-8")
+
+    # ── YAML에서 해당 필드만 교체 (주석 보존) ──────────────────
+    key     = field.split(".")[-1]           # "spec.maxReplicas" → "maxReplicas"
+    pattern = rf'(\s+{re.escape(key)}:\s*)\d+'
+    new_content, n = re.subn(pattern, rf'\g<1>{value}', raw_content, count=1)
+    if n == 0:
+        print(f"[!] YAML 필드 미발견: {field} in {git_path}", flush=True)
+        return False
+
+    # ── 커밋 ───────────────────────────────────────────────────
+    commit_body = {
+        "message": (
+            f"feat(ai-advisor): auto-scale {resource_name} "
+            f"{key} → {value}\n\n"
+            f"[AI Advisor] GCP 트렌드 분석 기반 자동 조정 — ArgoCD 적용 예정"
+        ),
+        "content": base64.b64encode(new_content.encode("utf-8")).decode("utf-8"),
+        "sha":     sha,
+        "branch":  GITHUB_BRANCH,
+    }
+    put_resp = requests.put(api_url, json=commit_body, headers=headers, timeout=15)
+    if put_resp.status_code in (200, 201):
+        print(f"[+] GitHub 커밋 완료 → ArgoCD 적용 대기: {git_path}  {key} → {value}",
+              flush=True)
+        return True
+
+    print(f"[!] GitHub 커밋 실패 ({put_resp.status_code}): {put_resp.text[:200]}", flush=True)
+    return False
 
 
 def apply_safe_patches(recs: list, ns: str) -> list:
@@ -724,7 +772,7 @@ def apply_safe_patches(recs: list, ns: str) -> list:
         tag = "[DRY]" if _DRY_RUN else "[PATCH]"
         print(f"{tag} {key}: {from_v} → {to_v}  | {rec.get('reason','')[:80]}", flush=True)
 
-        ok = True if _DRY_RUN else _do_k8s_patch(rec["target"], rec["field"], to_v, ns)
+        ok = True if _DRY_RUN else _do_git_patch(rec["target"], rec["field"], to_v, ns)
 
         if ok:
             cooldown[key] = now.isoformat()
