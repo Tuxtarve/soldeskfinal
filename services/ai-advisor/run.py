@@ -59,6 +59,10 @@ GITHUB_TOKEN  = os.environ.get("GITHUB_TOKEN",  "")
 GITHUB_REPO   = os.environ.get("GITHUB_REPO",   "Tuxtarve/soldeskfinal")
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "FINAL")
 
+# CronJob은 */1 고정, 내부에서 평상시/피크 모드 전환
+PEAK_SQS_THRESHOLD  = int(os.environ.get("PEAK_SQS_THRESHOLD",  "100"))
+NORMAL_INTERVAL_MIN = int(os.environ.get("NORMAL_INTERVAL_MIN", "10"))
+
 
 # ============================================================
 # 1. 메트릭 수집
@@ -621,6 +625,36 @@ def _cooldown_save(ns: str, data: dict) -> None:
             print(f"[!] 쿨다운 저장 실패: {e}", flush=True)
 
 
+def _is_peak_mode() -> bool:
+    """SQS 대기 메시지 수만 빠르게 조회해 피크 여부 판단.
+    피크(True)면 매분 실행, 평상시(False)면 10분 간격으로 건너뜀.
+    """
+    try:
+        client = boto3.client("sqs", region_name=REGION)
+        url    = client.get_queue_url(QueueName=QUEUE_NAME)["QueueUrl"]
+        attrs  = client.get_queue_attributes(
+            QueueUrl=url,
+            AttributeNames=["ApproximateNumberOfMessages"],
+        )["Attributes"]
+        waiting = int(attrs.get("ApproximateNumberOfMessages", 0))
+        print(f"[*] SQS 대기: {waiting}개 (피크 기준: {PEAK_SQS_THRESHOLD})", flush=True)
+        return waiting >= PEAK_SQS_THRESHOLD
+    except Exception as e:
+        print(f"[!] 피크 판단 실패: {e} → 평상시 모드로 처리", flush=True)
+        return False
+
+
+def _get_last_full_run(ns: str) -> datetime | None:
+    ts = _cooldown_load(ns).get("__last_full_run__")
+    return datetime.fromisoformat(ts) if ts else None
+
+
+def _set_last_full_run(ns: str) -> None:
+    data = _cooldown_load(ns)
+    data["__last_full_run__"] = datetime.now(timezone.utc).isoformat()
+    _cooldown_save(ns, data)
+
+
 def _get_current_value(target: str, field: str, ns: str) -> int | None:
     """K8s API 에서 현재 실제값을 읽어 반환. Gemini 출력의 from 값은 믿지 않음."""
     parts         = [p.strip() for p in target.split("/")]
@@ -852,8 +886,23 @@ def main() -> int:
         sys.stderr.write(f"컨텍스트 파일 없음: {CONTEXT_FILE}\n")
         return 1
 
+    # ── 실행 모드 판단 (CronJob */1 고정, 내부에서 10분/1분 전환) ──────
+    peak      = _is_peak_mode()
+    now_dt    = datetime.now(timezone.utc)
+    last_run  = _get_last_full_run(NS)
+    elapsed   = (now_dt - last_run).total_seconds() / 60 if last_run else NORMAL_INTERVAL_MIN + 1
+
+    if not peak and elapsed < NORMAL_INTERVAL_MIN:
+        print(
+            f"[*] 평상시 모드: 마지막 실행 {elapsed:.0f}분 전 → 스킵 "
+            f"(기준: {NORMAL_INTERVAL_MIN}분)",
+            flush=True,
+        )
+        return 0
+
+    mode_label = "피크 1분" if peak else f"평상시 {NORMAL_INTERVAL_MIN}분"
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"[*] AI Advisor CronJob 시작: {ts}", flush=True)
+    print(f"[*] AI Advisor CronJob 시작: {ts}  [{mode_label} 모드]", flush=True)
 
     # ── GCP 클라이언트 사전 초기화 (병렬 수집 중 WIF 인증 완료) ──
     from concurrent.futures import ThreadPoolExecutor as _TPE
@@ -975,6 +1024,7 @@ def main() -> int:
         }, severity="INFO" if _DRY_RUN else "WARNING")
         _slack_patch_notify(applied)
 
+    _set_last_full_run(NS)
     print(f"[*] AI Advisor 완료", flush=True)
     return 0
 
